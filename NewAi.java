@@ -67,7 +67,35 @@ public class NewAi implements CathedralAI {
         // Get the overlapping positions of the placements that both players took this turn
         opponentPositions.retainAll(playerPositions);
 
+        Set<Position> prevRegions = checkRegions(game.getBoard().getField(), game.getCurrentPlayer());
 
+        Set<PlacementData> finalPlacements = new HashSet<>();
+        for (Position pos : opponentPositions) {
+            int x = pos.x();
+            int y = pos.y();
+            for (Building building : game.getPlacableBuildings()) {
+                // Test all turnables of the building
+                for (Direction direction : building.getTurnable().getPossibleDirections()) {
+                    Placement possPlacement = new Placement(x, y, direction, building);
+                    // Take a turn using the "fast" method without checking the regions
+                    if (game.takeTurn(possPlacement, true)) {
+                        // Check the number of regions that this placement would provide
+                        game.undoLastTurn();
+                        // Fetch the regions that are placed at this point
+                        prevRegions = checkRegions(game.getBoard().getField(), player);
+                        // Check the regions
+                        game.takeTurn(possPlacement, false);
+                        Set<Position> newRegions = checkRegions(game.getBoard().getField(), player);
+                        // Get the amount of regions that have been added
+                        int newRegionSize = newRegions.size() - prevRegions.size();
+
+                        // We can take a turn, thus we add it to the "possible" set
+                        finalPlacements.add(new PlacementData(possPlacement, newRegionSize));
+                        game.undoLastTurn();
+                    }
+                }
+            }
+        }
 
         System.out.println(ANSI_GREEN + "[LOG] Calculate optimal position" + ANSI_RESET);
         // Apply rule-set on possible turns:
@@ -75,12 +103,12 @@ public class NewAi implements CathedralAI {
         int highest = 0;
         PlacementData bestPlacement = null;
         // abort, as there are no placements possible!
-        if (possibles.isEmpty()) {
+        if (finalPlacements.isEmpty()) {
             System.out.println(ANSI_GREEN + "[LOG] Done (No Placements possible!)" + ANSI_RESET);
             return null;
         }
         // Select the placement that has the highest point value
-        for (PlacementData place : possibles) {
+        for (PlacementData place : finalPlacements) {
             if (place.getScore() >= highest) {
                 highest = place.placement.building().score() + place.positions;
                 bestPlacement = place;
