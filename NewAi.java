@@ -8,13 +8,10 @@ import java.util.*;
 public class NewAi implements CathedralAI {
 
     public static final String ANSI_RESET = "\u001B[0m";
+    public static final String ANSI_GREEN = "\u001B[32m";
     public static final String ANSI_BLACK_BACKGROUND = "\u001B[40m";
-    public static final String ANSI_RED_BACKGROUND = "\u001B[41m";
     public static final String ANSI_GREEN_BACKGROUND = "\u001B[42m";
-    public static final String ANSI_YELLOW_BACKGROUND = "\u001B[43m";
     public static final String ANSI_BLUE_BACKGROUND = "\u001B[44m";
-    public static final String ANSI_PURPLE_BACKGROUND = "\u001B[45m";
-    public static final String ANSI_CYAN_BACKGROUND = "\u001B[46m";
     public static final String ANSI_WHITE_BACKGROUND = "\u001B[47m";
 
     @Override
@@ -29,81 +26,72 @@ public class NewAi implements CathedralAI {
 
     @Override
     public Placement takeTurn(Game game) {
+        System.out.println(ANSI_GREEN + "[LOG] Capture percepts" + ANSI_RESET);
         // Create copy of the current game state
-
         // Get the Percept:
         // ---------------
         Game copy = game.copy();
-
-        Set<Placement> possibles = new HashSet<>();
-        // Check, if the next turn of the opponent could possibly result in a marked region, and if so, act against it
-        // ---------------------------------
-        // 0. Fetch a new game copy on which to operate
-        Game otherplayer = game.copy();
-        // 1. Assume the position of the opponent
-        copy.forfeitTurn();
-        // 2.1: Fetch the current player
+        Set<PlacementData> possibles = new HashSet<>();
+        // Fetch the current player
         Color player = copy.getCurrentPlayer();
-        // 2.2: Fetch the current board state
+        // Fetch the current board state
         Color[][] field = copy.getBoard().getField();
-        // 2.3: Save all the current regions that exist:
-        Set<Position> prevReagions = checkReagions(field, player);
-
+        // Save all the current regions that exist:
+        Set<Position> prevRegions = checkRegions(field, player);
         // 3. Check, if the next turn would result in a captured region for the opponent, and if so, prevent that
-        for(Building building : copy.getPlacableBuildings()) {
-            for(int x = 0; x < 10 ; x++) {
-                for(int y = 0; y < 10 ; y++) {
-                    for(Direction dir : building.getTurnable().getPossibleDirections()) {
-                        Placement possPlacement = new Placement(x,y,dir, building);
-                        if(copy.takeTurn(possPlacement, false)) {
-                            // Check, if this results in a reagion:
-
-                        }
-                        // Undo turn
-                    }
-                }
-            }
-        }
-        // x. Fetch a new game copy for the actual calculation
-        copy = game.copy();
-
-        printBoard(game.getBoard());
+        System.out.println(ANSI_GREEN + "[LOG] Calculate possible positions" + ANSI_RESET);
         // Test all buildings
         // Test every position on the board and filter any turn that is not possible
-        for (Building building : copy.getPlacableBuildings()) {
-            // Iterate over the board positions
-            for (int x = 0; x < 10; x++) {
-                for (int y = 0; y < 10; y++) {
-                    // Test all turnables of the building
-                    for (Direction direction : building.getTurnable().getPossibleDirections()) {
-                        Placement possPlacement = new Placement(x, y, direction, building);
-                        // Take a turn using the "fast" method without checking the regions
-                        if (copy.takeTurn(possPlacement, true)) {
-                            // We can take a turn, thus we add it to the "possible" set
-                            possibles.add(possPlacement);
-                            copy.undoLastTurn();
+        // Iterate over the board positions
+        for (int x = 0; x < 10; x++) {
+            for (int y = 0; y < 10; y++) {
+                if (field[x][y].getId() == player.getId() || field[x][y].getId() == (player.getId() + 1) || field[x][y].getId() == Color.None.getId()) {
+                    for (Building building : copy.getPlacableBuildings()) {
+                        // Test all turnables of the building
+                        for (Direction direction : building.getTurnable().getPossibleDirections()) {
+                            Placement possPlacement = new Placement(x, y, direction, building);
+                            // Take a turn using the "fast" method without checking the regions
+                            if (copy.takeTurn(possPlacement, true)) {
+                                // Check the number of regions that this placement would provide
+                                copy.undoLastTurn();
+                                // Fetch the regions that are placed at this point
+                                prevRegions = checkRegions(copy.getBoard().getField(), player);
+                                // Check the regions
+                                copy.takeTurn(possPlacement, false);
+                                Set<Position> newRegions = checkRegions(copy.getBoard().getField(), player);
+                                // Get the amount of regions that have been added
+                                int newRegionSize = newRegions.size() - prevRegions.size();
+
+                                // We can take a turn, thus we add it to the "possible" set
+                                possibles.add(new PlacementData(possPlacement, newRegionSize));
+                                copy.undoLastTurn();
+                            }
                         }
                     }
                 }
             }
         }
-
+        System.out.println(ANSI_GREEN + "[LOG] Calculate optimal position" + ANSI_RESET);
         // Apply rule-set on possible turns:
         // ---------------------------------
         int highest = 0;
-        Placement bestPlacement = null;
+        PlacementData bestPlacement = null;
         // abort, as there are no placements possible!
         if (possibles.isEmpty()) {
+            System.out.println(ANSI_GREEN + "[LOG] Done (No Placements possible!)" + ANSI_RESET);
             return null;
         }
         // Select the placement that has the highest point value
-        for (Placement place : possibles) {
-            if (place.building().score() >= highest) {
-                highest = place.building().score();
+        for (PlacementData place : possibles) {
+            if (place.placement.building().score() >= highest) {
+                highest = place.placement.building().score() + place.positions;
                 bestPlacement = place;
             }
         }
-        return bestPlacement;
+        System.out.println(bestPlacement);
+        System.out.println(ANSI_GREEN + "[LOG] Done" + ANSI_RESET);
+        assert bestPlacement != null;
+        return bestPlacement.placement;
     }
 
     @Override
@@ -115,69 +103,99 @@ public class NewAi implements CathedralAI {
     // ---------------
 
     /**
-     * Check, if there are reagions captured for this player
+     * Check, if there are regions captured for this player
      *
-     * @param field the field to check
+     * @param field  the field to check
      * @param player the player to check for
-     *
-     * @return the positions that are captured
      */
-    private Set<Position> checkReagions(Color[][] field, Color player) {
-        Set<Position> capturables = new HashSet();
-        for(int i = 0; i < 10 ; i++) {
-            for(int j = 0; j < 10 ; j++) {
-                if(field[i][j].getId() == (player.getId()+1)) {
-                    capturables.add(new Position(i, j));
-                }
-            }
-        }
-        return capturables;
-    }
-    /**
-     * Print the board to the console
-     * @param board the board to print
-     * @author malte quandt
-     * @version 1.0
-     */
-    private void printBoard(final Board board) {
+    private Set<Position> checkRegions(Color[][] field, Color player) {
+        Set<Position> newPositions = new HashSet<>();
         for (int i = 0; i < 10; i++) {
             for (int j = 0; j < 10; j++) {
-                // Fetch the current field's data
-                Color currentField = board.getField()[i][j];
-                // Do nothing for an empty field
-                switch(currentField) {
-                    case White -> {
-                        System.out.print(ANSI_WHITE_BACKGROUND + "   " + ANSI_RESET);
-                        break;
-                    }
-                    case White_Owned -> {
-                        System.out.print(ANSI_WHITE_BACKGROUND + " O " + ANSI_RESET);
-                        break;
-                    }
-                    case Black -> {
-                        System.out.print(ANSI_BLACK_BACKGROUND + "   " + ANSI_RESET);
-                        break;
-                    }
-                    case Black_Owned -> {
-                        System.out.print(ANSI_BLACK_BACKGROUND + " O " + ANSI_RESET);
-                        break;
-                    }
-                    case Blue -> {
-                        System.out.print(ANSI_BLUE_BACKGROUND + "   " + ANSI_RESET);
-                        break;
-                    }
-                    case None -> {
-                        System.out.print("   ");
-                        break;
-                    }
-                    default -> {
-                        System.out.print(currentField + "   ");
-                        break;
-                    }
+                Position curr = new Position(i, j);
+                // If the field is a capture of the current player, and if the field is not yet captured
+                if (field[i][j].getId() == (player.getId() + 1)) {
+                    // Add that to the oldPosit
+                    newPositions.add(curr);
                 }
             }
+        }
+        return newPositions;
+    }
+
+    /**
+     * Print the board to the console
+     *
+     * @param board the board to print
+     * @author malte quandt
+     */
+    private void printBoard(final Color[][] board) {
+        for (int i = 0; i < 10; i++) {
+            System.out.print("|");
+            for (int j = 0; j < 10; j++) {
+                // Fetch the current field's data
+                Color currentField = board[i][j];
+                // Do nothing for an empty field
+                switch (currentField) {
+                    case White -> System.out.print(ANSI_WHITE_BACKGROUND + "   " + ANSI_RESET);
+
+                    case White_Owned -> System.out.print(ANSI_WHITE_BACKGROUND + " O " + ANSI_RESET);
+
+                    case Black -> System.out.print(ANSI_BLACK_BACKGROUND + "   " + ANSI_RESET);
+
+                    case Black_Owned -> System.out.print(ANSI_BLACK_BACKGROUND + " O " + ANSI_RESET);
+
+                    case Blue -> System.out.print(ANSI_BLUE_BACKGROUND + "   " + ANSI_RESET);
+
+                    case None -> System.out.print("   ");
+
+                    default -> System.out.print(currentField + "   ");
+
+                }
+            }
+            System.out.print("|");
             System.out.println();
         }
+    }
 
+    /**
+     * Calculate if there are newly captured regions
+     *
+     * @param prevcaptures the previously captured regions
+     * @param board        the board to check against
+     * @param player
+     * @return the new regions that have been captured in this calculation
+     */
+    private Set<Position> checkNewCaptures(Set<Position> prevcaptures, Color[][] board, Color player) {
+        Set<Position> newCapturedReagions = new HashSet<>(0);
+        for (int i = 0; i < 10; i++) {
+            for (int j = 0; j < 10; j++) {
+                // A reagion of the current player
+                Position curr = new Position(i, j);
+                if (board[i][j].getId() == (player.getId() + 1)) {
+                    newCapturedReagions.add(curr);
+                }
+            }
+        }
+        return newCapturedReagions;
+    }
+}
+/**
+ * Data class that contains all the data for a placement that are relevant for it's evaluation
+ */
+class PlacementData {
+    // The placement
+    public Placement placement;
+    // the amount of positions in the reagion this placement would get
+    public int positions;
+
+    PlacementData(Placement placement, int positions) {
+        this.placement=placement;
+        this.positions=positions;
+    }
+
+    @Override
+    public String toString() {
+        return this.placement.toString() + "\nReagions: " + this.positions + "\nScore: " + (this.placement.building().score() + this.positions);
     }
 }
