@@ -35,7 +35,7 @@ public class NewAi implements CathedralAI {
         long start = System.nanoTime();
         System.out.println(ANSI_GREEN + "[LOG] Capture percepts" + ANSI_RESET);
         // Create copy of the current game state
-        // Get the Percept:
+        // Get the percept:
         // ---------------
         Game copy = game.copy();
         Set<PlacementData> possibles;
@@ -76,7 +76,7 @@ public class NewAi implements CathedralAI {
         Set<PlacementData> finalPlacements = new HashSet<>();
         // Calculate all the position that
         for (Position pos : opponentPositions) {
-            checkPlacementData(pos.x(), pos.y(), game, player,finalPlacements);
+            checkPlacementData(pos.x(), pos.y(), game, player, finalPlacements);
         }
 
         System.out.println(ANSI_GREEN + "[LOG] Calculate optimal position" + ANSI_RESET);
@@ -87,39 +87,37 @@ public class NewAi implements CathedralAI {
         // Calculate the data on the
         for (PlacementData dataPlay : finalPlacements) {
             // Get all opponents objects at the position of this player position and calculate the average position data
-            dataPlay.prevent = opponentsPlacements.stream().
-                    filter(data -> data.placement.position().equals(dataPlay.placement.position())).
-                    mapToDouble(PlacementData::getPositions).
-                    average().
-                    orElse(0.0);
+            dataPlay.prevent = opponentsPlacements.stream()
+                    .filter(data -> data.placement.position().equals(dataPlay.placement.position()))
+                    .mapToDouble(PlacementData::getPositions)
+                    .average()
+                    .orElse(0.0);
         }
         // Add all possibles to the finals that have just been calculated
         finalPlacements.addAll(possibles);
+
         // Apply rule-set on possible turns:
         // ---------------------------------
-        int highest = 0;
-        PlacementData bestPlacement = null;
+
         // abort, as there are no placements possible!
         if (finalPlacements.isEmpty()) {
             skip(game);
             return null;
         }
         // Select the placement that has the highest point value
-        for (PlacementData place : finalPlacements) {
-            if (place.getScore() >= highest) {
-                highest = place.getScore();
-                bestPlacement = place;
-            }
-        }
+        PlacementData bestPlacement = finalPlacements.stream().max(Comparator.comparing(PlacementData::getScore)).get();
+        // TODO: Check into the future, once, and if the placement has any adverse effects, take the next best placement
+        // from the placement list.
         System.out.println(bestPlacement);
+
+        // Provide a view into the world after the placement
+        copy.takeTurn(bestPlacement.placement, true);
+        printBoard(copy.getBoard().getField());
+        // Print out the time it took to calculate this action
         printTime(start, System.nanoTime());
         System.out.println(ANSI_GREEN + "[LOG] Done" + ANSI_RESET);
 
-        // A placement is no longer possible!
-        if (null == bestPlacement) {
-            skip(game);
-            return null;
-        }
+        // Return the calculated action
         return bestPlacement.placement;
     }
 
@@ -167,14 +165,13 @@ public class NewAi implements CathedralAI {
      * Calculate the placables that can be put onto the field for the current player
      *
      * @param game the game we are working on
-     * @return the amoung of possible placables on this board for the current player
+     * @return the among of possible placables on this board for the current player
      */
     private Set<PlacementData> getPlacements(Game game) {
         Color player = game.getCurrentPlayer();
         Set<PlacementData> possibles = new HashSet<>();
         for (int x = 0; x < 10; x++) {
             for (int y = 0; y < 10; y++) {
-                // if (field[x][y].getId() == (player.getId() + 1) || field[x][y].getId() == Color.None.getId()) {
                 checkPlacementData(x, y, game, player, possibles);
             }
         }
@@ -184,32 +181,38 @@ public class NewAi implements CathedralAI {
     /**
      * Check the current position and return all blocks that fit there
      *
-     * @param x           the x coordinate
-     * @param y           the y coordinate
-     * @param game        the game to test for
-     * @param player      the player that is currently active
-     * @param data        the placement data to write to on success
+     * @param x      the x coordinate
+     * @param y      the y coordinate
+     * @param game   the game to test for
+     * @param player the player that is currently active
+     * @param data   the placement data to write to on success
      */
     private void checkPlacementData(int x, int y, Game game, Color player, Set<PlacementData> data) {
-        for (Building building : game.getPlacableBuildings()) {
-            // Test all turnables of the building
-            for (Direction direction : building.getTurnable().getPossibleDirections()) {
-                Placement possPlacement = new Placement(x, y, direction, building);
-                // Take a turn using the "fast" method without checking the regions
-                if (game.takeTurn(possPlacement, true)) {
-                    // Check the number of regions that this placement would provide
-                    game.undoLastTurn();
-                    // Fetch the regions that are placed at this point
-                    Set<Position> prevRegions = checkRegions(game.getBoard().getField(), player);
-                    // Check the regions
-                    game.takeTurn(possPlacement, false);
-                    Set<Position> newRegions = checkRegions(game.getBoard().getField(), player);
-                    // Get the amount of regions that have been added
-                    int newRegionSize = newRegions.size() - prevRegions.size();
+        // Fetch the field data
+        Color[][] field = game.getBoard().getField();
+        // Check, if this current field is applicable for checking it out, specifically if and only if the field belongs
+        // to the current player or to no one at all
+        if (field[x][y].getId() == (player.getId() + 1) || field[x][y].getId() == Color.None.getId()) {
+            for (Building building : game.getPlacableBuildings()) {
+                // Test all turnables of the building
+                for (Direction direction : building.getTurnable().getPossibleDirections()) {
+                    Placement possPlacement = new Placement(x, y, direction, building);
+                    // Take a turn using the "fast" method without checking the regions
+                    if (game.takeTurn(possPlacement, true)) {
+                        // Check the number of regions that this placement would provide
+                        game.undoLastTurn();
+                        // Fetch the regions that are placed at this point
+                        Set<Position> prevRegions = checkRegions(game.getBoard().getField(), player);
+                        // Check the regions
+                        game.takeTurn(possPlacement, false);
+                        Set<Position> newRegions = checkRegions(game.getBoard().getField(), player);
+                        // Get the amount of regions that have been added
+                        int newRegionSize = newRegions.size() - prevRegions.size();
 
-                    // We can take a turn, thus we add it to the "possible" set
-                    data.add(new PlacementData(possPlacement, newRegionSize));
-                    game.undoLastTurn();
+                        // We can take a turn, thus we add it to the "possible" set
+                        data.add(new PlacementData(possPlacement, newRegionSize));
+                        game.undoLastTurn();
+                    }
                 }
             }
         }
@@ -299,7 +302,8 @@ class PlacementData {
                 + getScore()
                 + "\nPrevents: "
                 + getPrevent()
-                + "\n=> Score: " + getScore();
+                + "\n=> Score: "
+                + getScore();
     }
 
     /**
@@ -308,7 +312,7 @@ class PlacementData {
      * @return the scale of the prevention value
      */
     public int preventValue() {
-        return (int) this.prevent / 2;
+        return (int) Math.ceil(this.prevent / 4);
     }
 
     public int getScore() {
