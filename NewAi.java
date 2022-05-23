@@ -4,9 +4,11 @@ import de.fhkiel.ki.ai.CathedralAI;
 import de.fhkiel.ki.cathedral.*;
 
 import java.util.*;
+import java.util.stream.Collectors;
 
 public class NewAi implements CathedralAI {
 
+    /* Colors */
     public static final String ANSI_RESET = "\u001B[0m";
     public static final String ANSI_GREEN = "\u001B[32m";
     public static final String ANSI_RED = "\u001B[31m";
@@ -16,6 +18,9 @@ public class NewAi implements CathedralAI {
     public static final String ANSI_BLUE_BACKGROUND = "\u001B[44m";
     public static final String ANSI_WHITE_BACKGROUND = "\u001B[47m";
 
+    // Threads which the program can use to
+    private List<Thread> threads;
+
     @Override
     public String name() {
         return "Team ECHO";
@@ -23,6 +28,8 @@ public class NewAi implements CathedralAI {
 
     @Override
     public void init(Game game) {
+        // Allocate a new thread list
+        threads = new ArrayList<>();
     }
 
     @Override
@@ -33,51 +40,49 @@ public class NewAi implements CathedralAI {
     public Placement takeTurn(Game game) {
         // Fetch the start time of the function
         long start = System.nanoTime();
+        // Count the number of threads that are available for this system
+        int processors = Runtime.getRuntime().availableProcessors() - 2;
         System.out.println(ANSI_GREEN + "[LOG] Capture percepts" + ANSI_RESET);
         // Create copy of the current game state
         // Get the percept:
         // ---------------
         Game copy = game.copy();
         Set<PlacementData> possibles;
-        // Fetch the current player
-        Color player = copy.getCurrentPlayer();
         // Check if the opponents next placement would result in a captured region
         // ------------------------------------------------------------------------
         // 1. Assume the position of the opponent
         Game opGame = game.copy();
         opGame.forfeitTurn();
+        System.out.println(ANSI_GREEN + "[LOG] Calculate possible positions" + ANSI_RESET);
         // 2. Fetch the possible movements of the opponent after this turn
         Set<PlacementData> opponentsPlacements = getPlacements(opGame);
         // 3. Filter for the positions that would capture regions
         opponentsPlacements.removeIf(placementData -> placementData.positions == 0);
 
+        // Get the set of all positions
+        Set<Position> opponentPositions = (opponentsPlacements
+                .stream()
+                .map(var -> var.getPlacement().position()))
+                .collect(Collectors.toSet());
         // Check the positions that are possible right now:
         // ------------------------------------------------
-        System.out.println(ANSI_GREEN + "[LOG] Calculate possible positions" + ANSI_RESET);
         // Test all buildings
         // Test every position on the board and filter any turn that is not possible
         // Iterate over the board positions
         possibles = getPlacements(game);
 
+
         // Create the set union of the possible placements that the current player can make and the region-capturing
         // placements our opponent could make
-        Set<Position> opponentPositions = new HashSet<>(opponentsPlacements.size());
-        for (PlacementData data : opponentsPlacements) {
-            opponentPositions.add(new Position(data.placement.x(), data.placement.y()));
-        }
+        Set<Position> playerPositions = possibles.stream().map(var -> var.getPlacement().position()).collect(Collectors.toSet());
 
-        Set<Position> playerPositions = new HashSet<>(possibles.size());
-        for (PlacementData data : possibles) {
-            playerPositions.add(new Position(data.placement.x(), data.placement.y()));
-        }
         // Get the overlapping positions of the placements that both players took this turn
         opponentPositions.retainAll(playerPositions);
 
         Set<PlacementData> finalPlacements = new HashSet<>();
         // Calculate all the position that
-        for (Position pos : opponentPositions) {
-            checkPlacementData(pos.x(), pos.y(), game, player, finalPlacements);
-        }
+        Set<PlacementData> finalPlacements1 = finalPlacements;
+        opponentPositions.forEach(pos -> checkPlacementData(pos.x(), pos.y(), game, finalPlacements1));
 
         System.out.println(ANSI_GREEN + "[LOG] Calculate optimal position" + ANSI_RESET);
         // If there are no more overlapping positions, then take the optimal data form the player
@@ -101,7 +106,7 @@ public class NewAi implements CathedralAI {
 
         // abort, as there are no placements possible!
         if (finalPlacements.isEmpty()) {
-            skip(game);
+            skip();
             return null;
         }
         // Select the placement that has the highest point value
@@ -152,13 +157,10 @@ public class NewAi implements CathedralAI {
     }
 
     /**
-     * Call this method in order to skip to the next turn of the next player
-     *
-     * @param game the game to skip for
+     * Call this method in order to do nothing
      */
-    private void skip(Game game) {
+    private void skip() {
         System.out.println(ANSI_GREEN + "[LOG] Skip, as there are no valid placements no more!" + ANSI_RESET);
-        game.forfeitTurn();
     }
 
     /**
@@ -167,12 +169,11 @@ public class NewAi implements CathedralAI {
      * @param game the game we are working on
      * @return the among of possible placables on this board for the current player
      */
-    private Set<PlacementData> getPlacements(Game game) {
-        Color player = game.getCurrentPlayer();
+    private static Set<PlacementData> getPlacements(Game game) {
         Set<PlacementData> possibles = new HashSet<>();
         for (int x = 0; x < 10; x++) {
             for (int y = 0; y < 10; y++) {
-                checkPlacementData(x, y, game, player, possibles);
+                checkPlacementData(x, y, game, possibles);
             }
         }
         return possibles;
@@ -181,38 +182,36 @@ public class NewAi implements CathedralAI {
     /**
      * Check the current position and return all blocks that fit there
      *
-     * @param x      the x coordinate
-     * @param y      the y coordinate
-     * @param game   the game to test for
-     * @param player the player that is currently active
-     * @param data   the placement data to write to on success
+     * @param x    the x coordinate
+     * @param y    the y coordinate
+     * @param game the game to test for
+     * @param data the placement data to write to on success
      */
-    private void checkPlacementData(int x, int y, Game game, Color player, Set<PlacementData> data) {
+    private static void checkPlacementData(int x, int y, Game game, Set<PlacementData> data) {
         // Fetch the field data
         Color[][] field = game.getBoard().getField();
+        Color player = game.getCurrentPlayer();
         // Check, if this current field is applicable for checking it out, specifically if and only if the field belongs
         // to the current player or to no one at all
-        if (field[x][y].getId() == (player.getId() + 1) || field[x][y].getId() == Color.None.getId()) {
-            for (Building building : game.getPlacableBuildings()) {
-                // Test all turnables of the building
-                for (Direction direction : building.getTurnable().getPossibleDirections()) {
-                    Placement possPlacement = new Placement(x, y, direction, building);
-                    // Take a turn using the "fast" method without checking the regions
-                    if (game.takeTurn(possPlacement, true)) {
-                        // Check the number of regions that this placement would provide
-                        game.undoLastTurn();
-                        // Fetch the regions that are placed at this point
-                        Set<Position> prevRegions = checkRegions(game.getBoard().getField(), player);
-                        // Check the regions
-                        game.takeTurn(possPlacement, false);
-                        Set<Position> newRegions = checkRegions(game.getBoard().getField(), player);
-                        // Get the amount of regions that have been added
-                        int newRegionSize = newRegions.size() - prevRegions.size();
+        for (Building building : game.getPlacableBuildings()) {
+            // Test all turnables of the building
+            for (Direction direction : building.getTurnable().getPossibleDirections()) {
+                Placement possPlacement = new Placement(x, y, direction, building);
+                // Take a turn using the "fast" method without checking the regions
+                if (game.takeTurn(possPlacement, true)) {
+                    // Check the number of regions that this placement would provide
+                    game.undoLastTurn();
+                    // Fetch the regions that are placed at this point
+                    Set<Position> prevRegions = checkRegions(game.getBoard().getField(), player);
+                    // Check the regions
+                    game.takeTurn(possPlacement, false);
+                    Set<Position> newRegions = checkRegions(game.getBoard().getField(), player);
+                    // Get the amount of regions that have been added
+                    int newRegionSize = newRegions.size() - prevRegions.size();
 
-                        // We can take a turn, thus we add it to the "possible" set
-                        data.add(new PlacementData(possPlacement, newRegionSize));
-                        game.undoLastTurn();
-                    }
+                    // We can take a turn, thus we add it to the "possible" set
+                    data.add(new PlacementData(possPlacement, newRegionSize));
+                    game.undoLastTurn();
                 }
             }
         }
@@ -224,7 +223,7 @@ public class NewAi implements CathedralAI {
      * @param field  the field to check
      * @param player the player to check for
      */
-    private Set<Position> checkRegions(Color[][] field, Color player) {
+    private static Set<Position> checkRegions(Color[][] field, Color player) {
         Set<Position> newPositions = new HashSet<>();
         for (int i = 0; i < 10; i++) {
             for (int j = 0; j < 10; j++) {
@@ -253,19 +252,13 @@ public class NewAi implements CathedralAI {
                 Color currentField = board[i][j];
                 // Do nothing for an empty field
                 switch (currentField) {
-                    case White -> System.out.print(ANSI_WHITE_BACKGROUND + "   " + ANSI_RESET);
-
-                    case White_Owned -> System.out.print(ANSI_WHITE_BACKGROUND + " O " + ANSI_RESET);
-
-                    case Black -> System.out.print(ANSI_BLACK_BACKGROUND + "   " + ANSI_RESET);
-
-                    case Black_Owned -> System.out.print(ANSI_BLACK_BACKGROUND + " O " + ANSI_RESET);
-
-                    case Blue -> System.out.print(ANSI_BLUE_BACKGROUND + "   " + ANSI_RESET);
-
-                    case None -> System.out.print("   ");
-
-                    default -> System.out.print(currentField + "   ");
+                    case White -> System.out.print(ANSI_WHITE_BACKGROUND + "  " + ANSI_RESET);
+                    case White_Owned -> System.out.print(ANSI_WHITE_BACKGROUND + "00" + ANSI_RESET);
+                    case Black -> System.out.print(ANSI_BLACK_BACKGROUND + "  " + ANSI_RESET);
+                    case Black_Owned -> System.out.print(ANSI_BLACK_BACKGROUND + "00" + ANSI_RESET);
+                    case Blue -> System.out.print(ANSI_BLUE_BACKGROUND + "  " + ANSI_RESET);
+                    case None -> System.out.print("  ");
+                    default -> System.out.print(currentField + "  ");
 
                 }
             }
@@ -273,57 +266,94 @@ public class NewAi implements CathedralAI {
             System.out.println();
         }
     }
-}
 
-/**
- * Data class that contains all the data for a placement that are relevant for it's evaluation
- */
-class PlacementData {
-    // The placement
-    public Placement placement;
-    // the amount of positions in the region this placement would get
-    public int positions;
-    // The amount of captures from the opponent this placement would prevent
-    public double prevent;
+    /**
+     * Data class that contains all the data for a placement that are relevant for it's evaluation
+     */
+    static class PlacementData {
+        // The placement
+        public Placement placement;
+        // the amount of positions in the region this placement would get
+        public int positions;
+        // The amount of captures from the opponent this placement would prevent
+        public double prevent;
 
-    PlacementData(Placement placement, int positions) {
-        this.placement = placement;
-        this.positions = positions;
-        this.prevent = 0;
-    }
+        PlacementData(Placement placement, int positions) {
+            this.placement = placement;
+            this.positions = positions;
+            this.prevent = 0;
+        }
 
-    @Override
-    public String toString() {
-        return "Placement: "
-                + this.placement.toString()
-                + "\nRegions: "
-                + getPositions()
-                + "\nScore: "
-                + getScore()
-                + "\nPrevents: "
-                + getPrevent()
-                + "\n=> Score: "
-                + getScore();
+        @Override
+        public String toString() {
+            return "Placement: "
+                    + this.placement.toString()
+                    + "\nRegions: "
+                    + getPositions()
+                    + "\nScore: "
+                    + getScore()
+                    + "\nPrevents: "
+                    + getPrevent()
+                    + "\n=> Score: "
+                    + getScore();
+        }
+
+        /**
+         * Here you can scale how much the prevention value matters for these calculations
+         *
+         * @return the scale of the prevention value
+         */
+        public int preventValue() {
+            return (int) Math.ceil(this.prevent / 2);
+        }
+
+        public int getScore() {
+            return this.placement.building().score() + this.positions + preventValue();
+        }
+
+        public int getPositions() {
+            return this.positions;
+        }
+
+        public double getPrevent() {
+            return prevent;
+        }
+
+        public Placement getPlacement() {
+            return this.placement;
+        }
     }
 
     /**
-     * Here you can scale how much the prevention value matters for these calculations
-     *
-     * @return the scale of the prevention value
+     * Thread class that calculates the next turn for a given player and game
      */
-    public int preventValue() {
-        return (int) Math.ceil(this.prevent / 4);
+    class TurnCalculator implements Runnable {
+        // The game for which this thread works
+        private Game game;
+        // The data for this thread;
+        private Set<PlacementData> data;
+
+        /**
+         * Create a new worker thread that would calculate the next possible position placement set for the player
+         *
+         * @param game         the game to work on, and create a copy for
+         * @param changePlayer if the player to be checked is the next one
+         */
+        TurnCalculator(Game game, boolean changePlayer) {
+            // Copy this game for this thread
+            this.game = game.copy();
+            if (changePlayer) this.game.forfeitTurn();
+        }
+
+        @Override
+        public void run() {
+            data = NewAi.getPlacements(game);
+        }
+
+        public Set<PlacementData> getData() {
+            return this.data;
+        }
     }
 
-    public int getScore() {
-        return this.placement.building().score() + this.positions + preventValue();
-    }
-
-    public int getPositions() {
-        return this.positions;
-    }
-
-    public double getPrevent() {
-        return prevent;
-    }
 }
+
