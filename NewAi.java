@@ -19,7 +19,9 @@ public class NewAi implements CathedralAI {
     public static final String ANSI_WHITE_BACKGROUND = "\u001B[47m";
 
     // Threads which the program can use to
-    private List<Thread> threads;
+    private List<TurnCalculator> threads;
+    // How many physical threads the system has access to
+    private int processors;
 
     @Override
     public String name() {
@@ -29,7 +31,8 @@ public class NewAi implements CathedralAI {
     @Override
     public void init(Game game) {
         // Allocate a new thread list
-        threads = new ArrayList<>();
+        int processors = Runtime.getRuntime().availableProcessors();
+        threads = new ArrayList<>(Math.min(processors, 2));
     }
 
     @Override
@@ -40,37 +43,51 @@ public class NewAi implements CathedralAI {
     public Placement takeTurn(Game game) {
         // Fetch the start time of the function
         long start = System.nanoTime();
-        // Count the number of threads that are available for this system
-        int processors = Runtime.getRuntime().availableProcessors() - 2;
         System.out.println(ANSI_GREEN + "[LOG] Capture percepts" + ANSI_RESET);
         // Create copy of the current game state
         // Get the percept:
         // ---------------
-        Game copy = game.copy();
         Set<PlacementData> possibles;
+        Set<PlacementData> opponentsPlacements;
         // Check if the opponents next placement would result in a captured region
         // ------------------------------------------------------------------------
         // 1. Assume the position of the opponent
-        Game opGame = game.copy();
-        opGame.forfeitTurn();
         System.out.println(ANSI_GREEN + "[LOG] Calculate possible positions" + ANSI_RESET);
         // 2. Fetch the possible movements of the opponent after this turn
-        Set<PlacementData> opponentsPlacements = getPlacements(opGame);
-        // 3. Filter for the positions that would capture regions
-        opponentsPlacements.removeIf(placementData -> placementData.positions == 0);
-
-        // Get the set of all positions
-        Set<Position> opponentPositions = (opponentsPlacements
-                .stream()
-                .map(var -> var.getPlacement().position()))
-                .collect(Collectors.toSet());
         // Check the positions that are possible right now:
         // ------------------------------------------------
         // Test all buildings
         // Test every position on the board and filter any turn that is not possible
         // Iterate over the board positions
-        possibles = getPlacements(game);
+        // Generate the worker threads
+        threads.add(0, new TurnCalculator(game, true));
+        threads.add(1, new TurnCalculator(game, false));
+        // Start the threads
+        threads.forEach(thread -> {
+            thread.start();
+        });
+        threads.forEach(worker -> {
+            try {
+                worker.join();
+            } catch (InterruptedException e) {
+                System.out.println(ANSI_RED + "[ERROR] The " + ANSI_RESET);
+                e.printStackTrace();
+            }
+        });
+        // Fetch the data from the threads
+        opponentsPlacements = threads.get(0).getData();
+        possibles = threads.get(1).getData();
 
+        // Clear the thread list, as it is no longer needed
+        threads.clear();
+
+        // 2. Filter for the positions that would capture regions
+        opponentsPlacements.removeIf(placementData -> placementData.positions == -1);
+        // Get the set of all positions
+        Set<Position> opponentPositions = (opponentsPlacements
+                .stream()
+                .map(var -> var.getPlacement().position()))
+                .collect(Collectors.toSet());
 
         // Create the set union of the possible placements that the current player can make and the region-capturing
         // placements our opponent could make
@@ -90,14 +107,13 @@ public class NewAi implements CathedralAI {
             finalPlacements = possibles;
         }
         // Calculate the data on the
-        for (PlacementData dataPlay : finalPlacements) {
-            // Get all opponents objects at the position of this player position and calculate the average position data
-            dataPlay.prevent = opponentsPlacements.stream()
-                    .filter(data -> data.placement.position().equals(dataPlay.placement.position()))
-                    .mapToDouble(PlacementData::getPositions)
-                    .average()
-                    .orElse(0.0);
-        }
+        finalPlacements.forEach(placed -> placed.prevent =
+                opponentsPlacements.stream()
+                        .filter(data -> data.placement.position().equals(placed.placement.position()))
+                        .mapToDouble(PlacementData::getPositions)
+                        .average()
+                        .orElse(0.0)
+        );
         // Add all possibles to the finals that have just been calculated
         finalPlacements.addAll(possibles);
 
@@ -110,16 +126,19 @@ public class NewAi implements CathedralAI {
             return null;
         }
         // Select the placement that has the highest point value
-        PlacementData bestPlacement = finalPlacements.stream().max(Comparator.comparing(PlacementData::getScore)).get();
+        List<PlacementData> valueSort = finalPlacements
+                .stream()
+                .sorted(Comparator.comparing(PlacementData::getScore))
+                .toList();
+        PlacementData bestPlacement = valueSort.get(valueSort.size() - 1);
+        System.out.println("The best placement, equals? : " + bestPlacement.equals(valueSort.get(valueSort.size() - 1)));
         // TODO: Check into the future, once, and if the placement has any adverse effects, take the next best placement
         // from the placement list.
         System.out.println(bestPlacement);
 
-        // Provide a view into the world after the placement
-        copy.takeTurn(bestPlacement.placement, true);
-        printBoard(copy.getBoard().getField());
         // Print out the time it took to calculate this action
         printTime(start, System.nanoTime());
+        // Print confirmation for the finished calculations
         System.out.println(ANSI_GREEN + "[LOG] Done" + ANSI_RESET);
 
         // Return the calculated action
@@ -277,11 +296,29 @@ public class NewAi implements CathedralAI {
         public int positions;
         // The amount of captures from the opponent this placement would prevent
         public double prevent;
+        // The value that this placement would change in the score of the current player
+        public int deltaScore;
 
         PlacementData(Placement placement, int positions) {
             this.placement = placement;
             this.positions = positions;
             this.prevent = 0;
+            this.deltaScore = 0;
+        }
+
+        /**
+         * Calculate the difference that this placement would do in the player's score, and place it in
+         * this data structure afterwards.
+         *
+         * @param oldValue the old value of the player score
+         * @param newValue the new value of the player score after placing this piece in this exact rotation
+         */
+        public void newDiff(int oldValue, int newValue) {
+            this.deltaScore = newValue - oldValue;
+        }
+
+        public int getScoreDelta() {
+            return this.deltaScore;
         }
 
         @Override
@@ -295,7 +332,9 @@ public class NewAi implements CathedralAI {
                     + "\nPrevents: "
                     + getPrevent()
                     + "\n=> Score: "
-                    + getScore();
+                    + getScore()
+                    + "\n The new score after this placement would be: "
+                    + getScoreDelta();
         }
 
         /**
@@ -327,7 +366,7 @@ public class NewAi implements CathedralAI {
     /**
      * Thread class that calculates the next turn for a given player and game
      */
-    class TurnCalculator implements Runnable {
+    class TurnCalculator extends Thread {
         // The game for which this thread works
         private Game game;
         // The data for this thread;
