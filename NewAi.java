@@ -135,13 +135,37 @@ public class NewAi implements CathedralAI {
                     .toList();
             // Fetch the best placement from the value list
             bestPlacement = valueSort.get(valueSort.size() - 1);
-            // from the placement list.
-            System.out.println(bestPlacement);
-
+/*
             // Take a realistic amount of processors from the system for this application
-            int availableProcessors = processors - 2;
+            int availableProcessors = (processors > 2) ? (processors - 2) : 2;
             // Check for each of the selected top positions
+            // Get the size of the list so that
+            int finalListSize = finalPlacements.size();
+            int loop = finalListSize > availableProcessors ? availableProcessors : finalListSize;
+            // Fill the available processors
+            for(int i = 0; i < loop; i++) {
+                // Apply the placement
+                game.
 
+                // Calculate the next turn of the opponent
+                threads.add(i, new TurnCalculator(game, true));
+                // Reset the previously generated turn
+                game.undoLastTurn();
+            }
+            // Fill the work calculators
+            for(TurnCalculator worker : threads) {
+
+            }
+
+            // Wait for those threads to finish execution
+            for(TurnCalculator worker : threads) {
+                try {
+                    worker.join();
+                } catch (InterruptedException e) {
+                    e.printStackTrace();
+                }
+            }
+*/
         } else {
             // Get a random placement of the list
             bestPlacement = possibles.stream().skip((int) (possibles.size() * Math.random())).findFirst().get();
@@ -151,6 +175,7 @@ public class NewAi implements CathedralAI {
         // Print confirmation for the finished calculations
         System.out.println(ANSI_GREEN + "[LOG] Done" + ANSI_RESET);
 
+        System.out.println(bestPlacement.toString());
         // Return the calculated action
         return bestPlacement.placement;
     }
@@ -221,7 +246,7 @@ public class NewAi implements CathedralAI {
     private static void checkPlacementData(int x, int y, Game game, Set<PlacementData> data) {
         // Fetch the current player
         Color player = game.getCurrentPlayer();
-        int oldScore = getScore(game);
+        int oldScore = getScore(game,player);
         // Check, if this current field is applicable for checking it out, specifically if and only if the field belongs
         // to the current player or to no one at all
         for (Building building : game.getPlacableBuildings()) {
@@ -239,7 +264,8 @@ public class NewAi implements CathedralAI {
                     Set<Position> newRegions = checkRegions(game.getBoard().getField(), player);
                     // Get the amount of regions that have been added
                     int newRegionSize = newRegions.size() - prevRegions.size();
-                    int newScore = getScore(game);
+                    int newScore = getScore(game,player);
+                    System.out.println("Get Score difference: " + oldScore + " : " + newScore);
                     PlacementData placement = new PlacementData(possPlacement, newRegionSize);
                     placement.newDiff(oldScore, newScore);
                     // We can take a turn, thus we add it to the "possible" set
@@ -250,8 +276,8 @@ public class NewAi implements CathedralAI {
         }
     }
 
-    private static Integer getScore(Game game) {
-        Object a = game.score().get(game.getCurrentPlayer());
+    private static Integer getScore(Game game, Color player) {
+        Object a = game.score().get(player);
         if (a != null) {
             return (int) a;
         } else {
@@ -413,6 +439,10 @@ public class NewAi implements CathedralAI {
             if (changePlayer) this.game.forfeitTurn();
             this.from = from;
             this.to = to;
+        }
+
+        TurnCalculator(Game game, boolean changePlayer) {
+            this(game, changePlayer, 0, 10);
         }
 
         @Override
