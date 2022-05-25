@@ -4,6 +4,7 @@ import de.fhkiel.ki.ai.CathedralAI;
 import de.fhkiel.ki.cathedral.*;
 
 import java.util.*;
+import java.util.function.Consumer;
 import java.util.stream.Collectors;
 
 public class NewAi implements CathedralAI {
@@ -43,6 +44,7 @@ public class NewAi implements CathedralAI {
     public Placement takeTurn(Game game) {
         // Fetch the start time of the function
         long start = System.nanoTime();
+        PlacementData bestPlacement;
         System.out.println(ANSI_GREEN + "[LOG] Capture percepts" + ANSI_RESET);
         // Create copy of the current game state
         // Get the percept:
@@ -60,12 +62,11 @@ public class NewAi implements CathedralAI {
         // Test every position on the board and filter any turn that is not possible
         // Iterate over the board positions
         // Generate the worker threads
-        threads.add(0, new TurnCalculator(game, true));
-        threads.add(1, new TurnCalculator(game, false));
+        threads.add(0, new TurnCalculator(game, true, 0, 10));
+        threads.add(1, new TurnCalculator(game, false, 0, 10));
         // Start the threads
-        threads.forEach(thread -> {
-            thread.start();
-        });
+        threads.forEach(Thread::start);
+        // Wait for each thread to finish execution
         threads.forEach(worker -> {
             try {
                 worker.join();
@@ -77,65 +78,74 @@ public class NewAi implements CathedralAI {
         // Fetch the data from the threads
         opponentsPlacements = threads.get(0).getData();
         possibles = threads.get(1).getData();
-
         // Clear the thread list, as it is no longer needed
         threads.clear();
+        // We don't have to calculate anything else if the field is empty
+        if (!game.getBoard().getPlacedBuildings().isEmpty()) {
 
-        // 2. Filter for the positions that would capture regions
-        opponentsPlacements.removeIf(placementData -> placementData.positions == -1);
-        // Get the set of all positions
-        Set<Position> opponentPositions = (opponentsPlacements
-                .stream()
-                .map(var -> var.getPlacement().position()))
-                .collect(Collectors.toSet());
 
-        // Create the set union of the possible placements that the current player can make and the region-capturing
-        // placements our opponent could make
-        Set<Position> playerPositions = possibles.stream().map(var -> var.getPlacement().position()).collect(Collectors.toSet());
+            // 2. Filter for the positions that would capture regions
+            opponentsPlacements.removeIf(placementData -> placementData.positions == -1);
+            // Get the set of all positions
+            Set<Position> opponentPositions = (opponentsPlacements
+                    .stream()
+                    .map(var -> var.getPlacement().position()))
+                    .collect(Collectors.toSet());
 
-        // Get the overlapping positions of the placements that both players took this turn
-        opponentPositions.retainAll(playerPositions);
+            // Create the set union of the possible placements that the current player can make and the region-capturing
+            // placements our opponent could make
+            Set<Position> playerPositions = possibles.stream().map(var -> var.getPlacement().position()).collect(Collectors.toSet());
 
-        Set<PlacementData> finalPlacements = new HashSet<>();
-        // Calculate all the position that
-        Set<PlacementData> finalPlacements1 = finalPlacements;
-        opponentPositions.forEach(pos -> checkPlacementData(pos.x(), pos.y(), game, finalPlacements1));
+            // Get the overlapping positions of the placements that both players took this turn
+            opponentPositions.retainAll(playerPositions);
 
-        System.out.println(ANSI_GREEN + "[LOG] Calculate optimal position" + ANSI_RESET);
-        // If there are no more overlapping positions, then take the optimal data form the player
-        if (opponentPositions.size() == 0) {
-            finalPlacements = possibles;
+            Set<PlacementData> finalPlacements = new HashSet<>();
+            // Calculate all the position that
+            Set<PlacementData> finalPlacements1 = finalPlacements;
+            opponentPositions.forEach(pos -> checkPlacementData(pos.x(), pos.y(), game, finalPlacements1));
+
+            System.out.println(ANSI_GREEN + "[LOG] Calculate optimal position" + ANSI_RESET);
+            // If there are no more overlapping positions, then take the optimal data form the player
+            if (opponentPositions.size() == 0) {
+                finalPlacements = possibles;
+            }
+            // Calculate the data on the
+            finalPlacements.forEach(placed -> placed.prevent =
+                    opponentsPlacements.stream()
+                            .filter(data -> data.placement.position().equals(placed.placement.position()))
+                            .mapToDouble(PlacementData::getPositions)
+                            .average()
+                            .orElse(0.0)
+            );
+            // Add all possibles to the finals that have just been calculated
+            finalPlacements.addAll(possibles);
+
+            // Apply rule-set on possible turns:
+            // ---------------------------------
+
+            // abort, as there are no placements possible!
+            if (finalPlacements.isEmpty()) {
+                skip();
+                return null;
+            }
+            // Select the placement that has the highest point value
+            List<PlacementData> valueSort = finalPlacements
+                    .stream()
+                    .sorted(Comparator.comparing(PlacementData::getScore))
+                    .toList();
+            // Fetch the best placement from the value list
+            bestPlacement = valueSort.get(valueSort.size() - 1);
+            // from the placement list.
+            System.out.println(bestPlacement);
+
+            // Take a realistic amount of processors from the system for this application
+            int availableProcessors = processors - 2;
+            // Check for each of the selected top positions
+
+        } else {
+            // Get a random placement of the list
+            bestPlacement = possibles.stream().skip((int) (possibles.size() * Math.random())).findFirst().get();
         }
-        // Calculate the data on the
-        finalPlacements.forEach(placed -> placed.prevent =
-                opponentsPlacements.stream()
-                        .filter(data -> data.placement.position().equals(placed.placement.position()))
-                        .mapToDouble(PlacementData::getPositions)
-                        .average()
-                        .orElse(0.0)
-        );
-        // Add all possibles to the finals that have just been calculated
-        finalPlacements.addAll(possibles);
-
-        // Apply rule-set on possible turns:
-        // ---------------------------------
-
-        // abort, as there are no placements possible!
-        if (finalPlacements.isEmpty()) {
-            skip();
-            return null;
-        }
-        // Select the placement that has the highest point value
-        List<PlacementData> valueSort = finalPlacements
-                .stream()
-                .sorted(Comparator.comparing(PlacementData::getScore))
-                .toList();
-        PlacementData bestPlacement = valueSort.get(valueSort.size() - 1);
-        System.out.println("The best placement, equals? : " + bestPlacement.equals(valueSort.get(valueSort.size() - 1)));
-        // TODO: Check into the future, once, and if the placement has any adverse effects, take the next best placement
-        // from the placement list.
-        System.out.println(bestPlacement);
-
         // Print out the time it took to calculate this action
         printTime(start, System.nanoTime());
         // Print confirmation for the finished calculations
@@ -186,11 +196,13 @@ public class NewAi implements CathedralAI {
      * Calculate the placables that can be put onto the field for the current player
      *
      * @param game the game we are working on
+     * @param from the start of the x coordinates to check
+     * @param to   the end of the x coordinates to check
      * @return the among of possible placables on this board for the current player
      */
-    private static Set<PlacementData> getPlacements(Game game) {
+    private static Set<PlacementData> getPlacements(Game game, int from, int to) {
         Set<PlacementData> possibles = new HashSet<>();
-        for (int x = 0; x < 10; x++) {
+        for (int x = from; x < to; x++) {
             for (int y = 0; y < 10; y++) {
                 checkPlacementData(x, y, game, possibles);
             }
@@ -207,9 +219,9 @@ public class NewAi implements CathedralAI {
      * @param data the placement data to write to on success
      */
     private static void checkPlacementData(int x, int y, Game game, Set<PlacementData> data) {
-        // Fetch the field data
-        Color[][] field = game.getBoard().getField();
+        // Fetch the current player
         Color player = game.getCurrentPlayer();
+        int oldScore = getScore(game);
         // Check, if this current field is applicable for checking it out, specifically if and only if the field belongs
         // to the current player or to no one at all
         for (Building building : game.getPlacableBuildings()) {
@@ -227,12 +239,23 @@ public class NewAi implements CathedralAI {
                     Set<Position> newRegions = checkRegions(game.getBoard().getField(), player);
                     // Get the amount of regions that have been added
                     int newRegionSize = newRegions.size() - prevRegions.size();
-
+                    int newScore = getScore(game);
+                    PlacementData placement = new PlacementData(possPlacement, newRegionSize);
+                    placement.newDiff(oldScore, newScore);
                     // We can take a turn, thus we add it to the "possible" set
-                    data.add(new PlacementData(possPlacement, newRegionSize));
+                    data.add(placement);
                     game.undoLastTurn();
                 }
             }
+        }
+    }
+
+    private static Integer getScore(Game game) {
+        Object a = game.score().get(game.getCurrentPlayer());
+        if (a != null) {
+            return (int) a;
+        } else {
+            return 47;
         }
     }
 
@@ -333,7 +356,7 @@ public class NewAi implements CathedralAI {
                     + getPrevent()
                     + "\n=> Score: "
                     + getScore()
-                    + "\n The new score after this placement would be: "
+                    + "\n The score delta of this piece is: "
                     + getScoreDelta();
         }
 
@@ -347,7 +370,7 @@ public class NewAi implements CathedralAI {
         }
 
         public int getScore() {
-            return this.placement.building().score() + this.positions + preventValue();
+            return this.placement.building().score() -this.getScoreDelta() + this.positions + preventValue();
         }
 
         public int getPositions() {
@@ -366,27 +389,35 @@ public class NewAi implements CathedralAI {
     /**
      * Thread class that calculates the next turn for a given player and game
      */
-    class TurnCalculator extends Thread {
+    static class TurnCalculator extends Thread {
         // The game for which this thread works
-        private Game game;
+        private final Game game;
         // The data for this thread;
         private Set<PlacementData> data;
+        // from where to check the field
+        private final Integer from;
+        // up to where to check the field
+        private final Integer to;
 
         /**
          * Create a new worker thread that would calculate the next possible position placement set for the player
          *
          * @param game         the game to work on, and create a copy for
          * @param changePlayer if the player to be checked is the next one
+         * @param from         the start of the x coordinates to check
+         * @param to           the end of the x coordinates to check
          */
-        TurnCalculator(Game game, boolean changePlayer) {
+        TurnCalculator(Game game, boolean changePlayer, int from, int to) {
             // Copy this game for this thread
             this.game = game.copy();
             if (changePlayer) this.game.forfeitTurn();
+            this.from = from;
+            this.to = to;
         }
 
         @Override
         public void run() {
-            data = NewAi.getPlacements(game);
+            data = NewAi.getPlacements(game, from, to);
         }
 
         public Set<PlacementData> getData() {
