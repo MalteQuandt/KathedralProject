@@ -531,7 +531,7 @@ public class NewAi implements CathedralAI {
             this.game = game.copy();
             data = new ArrayList<PlacementData>();
             // Jump to the next player
-            game.forfeitTurn();
+            this.game.forfeitTurn();
         }
 
         @Override
