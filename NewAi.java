@@ -32,7 +32,7 @@ public class NewAi implements CathedralAI {
     @Override
     public void init(Game game) {
         // Allocate a new thread list
-        int processors = Runtime.getRuntime().availableProcessors();
+        processors = Runtime.getRuntime().availableProcessors();
         threads = new ArrayList<>(Math.min(processors, 2));
     }
 
@@ -46,7 +46,6 @@ public class NewAi implements CathedralAI {
         long start = System.nanoTime();
         PlacementData bestPlacement;
         System.out.println(ANSI_GREEN + "[LOG] Capture percepts" + ANSI_RESET);
-        // Create copy of the current game state
         // Get the percept:
         // ---------------
         Set<PlacementData> possibles;
@@ -135,37 +134,78 @@ public class NewAi implements CathedralAI {
                     .toList();
             // Fetch the best placement from the value list
             bestPlacement = valueSort.get(valueSort.size() - 1);
-/*
-            // Take a realistic amount of processors from the system for this application
-            int availableProcessors = (processors > 2) ? (processors - 2) : 2;
-            // Check for each of the selected top positions
-            // Get the size of the list so that
-            int finalListSize = finalPlacements.size();
-            int loop = finalListSize > availableProcessors ? availableProcessors : finalListSize;
-            // Fill the available processors
-            for(int i = 0; i < loop; i++) {
-                // Apply the placement
-                game.
 
-                // Calculate the next turn of the opponent
-                threads.add(i, new TurnCalculator(game, true));
-                // Reset the previously generated turn
-                game.undoLastTurn();
-            }
-            // Fill the work calculators
-            for(TurnCalculator worker : threads) {
-
-            }
-
-            // Wait for those threads to finish execution
-            for(TurnCalculator worker : threads) {
-                try {
-                    worker.join();
-                } catch (InterruptedException e) {
-                    e.printStackTrace();
+            System.out.println(ANSI_GREEN + "[LOG] Predicting opponents gain" + ANSI_RESET);
+            {
+                // Take a realistic amount of processors from the system for this application
+                int availableProcessors = (processors > 2) ? (processors - 2) : 2;
+                List<OpponentWorker> opponentWorkers = new ArrayList<>(100);
+                // Check for each of the selected top positions
+                // Get the size of the list so that
+                int finalListSize = valueSort.size();
+                // Iterate over the list for the amount of processors available, and with at least 1 thread
+                int loop = Math.max(Math.min(finalListSize, availableProcessors), 1);
+                Map<PlacementData, List<PlacementData>> opponentData = new HashMap();
+                Game copy = game.copy();
+                // Fill the available processors
+                System.out.println(loop + " : " + finalListSize);
+                for (int i = 0; i < 2; i++) {
+                    for (int j = 0; j < loop; j++) {
+                        // Fetch the placement
+                        PlacementData placement = valueSort.get(valueSort.size() - (i * j + j) - 1);
+                        // Apply the placement
+                        copy.takeTurn(placement.getPlacement());
+                        // Calculate the next turn of the opponent
+                        opponentWorkers.add(new OpponentWorker(game));
+                        // Create a link between the data storage in the thread and the belonging
+                        opponentData.put(placement, opponentWorkers.get(j).getData());
+                        // Reset the previously generated turn
+                        copy.undoLastTurn();
+                    }
+                    // Fill the work calculators
+                    for (OpponentWorker worker : opponentWorkers) {
+                        worker.start();
+                    }
+                    // Wait for those threads to finish execution
+                    for (OpponentWorker worker : opponentWorkers) {
+                        try {
+                            worker.join();
+                        } catch (InterruptedException e) {
+                            e.printStackTrace();
+                        }
+                    }
+                    // Last iteration, thus we clear the opponent workers
+                    opponentWorkers.clear();
                 }
+                Map<PlacementData, Double> opponentPlacementsToScoreDelta = new HashMap<>();
+                // For each map position, calculate the average score the opponent will get
+                for (Map.Entry<PlacementData, List<PlacementData>> entry : opponentData.entrySet()) {
+                    // Calculate the average response of the opponent and store it in another list, or a field in data
+                    // TODO: Calculate the max instead of the average
+                    opponentPlacementsToScoreDelta.put(entry.getKey(), entry
+                            .getValue()
+                            .stream()
+                            .mapToDouble(PlacementData::getScoreDelta)
+                            .average()
+                            .orElse(0.0f));
+                }
+                opponentPlacementsToScoreDelta.entrySet().forEach(entry -> entry.getKey().setOpponentScore(entry.getValue()));
+                // Sort the list according to the average opponent placement data
+                List<Map.Entry<PlacementData, Double>> sortedOpponentPlacements = opponentPlacementsToScoreDelta
+                        .entrySet()
+                        .stream()
+                        .sorted(Map.Entry.comparingByValue())
+                        .toList();
+                List<PlacementData> finalData = sortedOpponentPlacements
+                        .stream()
+                        .map(data -> data.getKey())
+                        .sorted(Comparator.comparing(PlacementData::getScore))
+                        .toList();
+                System.out.println("smallest index: " + finalData.get(0));
+                System.out.println("highest index: " + finalData.get(finalData.size() - 1));
+                // Choose the placment as the best, that has the lowest gain for the opponent in the next turn:
+                bestPlacement = finalData.get(finalData.size() - 1);
             }
-*/
         } else {
             // Get a random placement of the list
             bestPlacement = possibles.stream().skip((int) (possibles.size() * Math.random())).findFirst().get();
@@ -191,7 +231,7 @@ public class NewAi implements CathedralAI {
      * @param end   the end time point of execution
      */
     private void printTime(long start, long end) {
-        long duration = (end - start) / 1000000; // Duration in seconds
+        long duration = (end - start) / 1000000; // Duration in milliseconds
         String color;
         // Function took no longer than 1000 milliseconds/1 second
         if (duration < 1000) {
@@ -246,7 +286,7 @@ public class NewAi implements CathedralAI {
     private static void checkPlacementData(int x, int y, Game game, Set<PlacementData> data) {
         // Fetch the current player
         Color player = game.getCurrentPlayer();
-        int oldScore = getScore(game,player);
+        int oldScore = getScore(game, player);
         // Check, if this current field is applicable for checking it out, specifically if and only if the field belongs
         // to the current player or to no one at all
         for (Building building : game.getPlacableBuildings()) {
@@ -264,8 +304,7 @@ public class NewAi implements CathedralAI {
                     Set<Position> newRegions = checkRegions(game.getBoard().getField(), player);
                     // Get the amount of regions that have been added
                     int newRegionSize = newRegions.size() - prevRegions.size();
-                    int newScore = getScore(game,player);
-                    System.out.println("Get Score difference: " + oldScore + " : " + newScore);
+                    int newScore = getScore(game, player);
                     PlacementData placement = new PlacementData(possPlacement, newRegionSize);
                     placement.newDiff(oldScore, newScore);
                     // We can take a turn, thus we add it to the "possible" set
@@ -347,6 +386,8 @@ public class NewAi implements CathedralAI {
         public double prevent;
         // The value that this placement would change in the score of the current player
         public int deltaScore;
+        // The score that the opponent can gain in the next turn, should this placement be chosen
+        public double opponentScore;
 
         PlacementData(Placement placement, int positions) {
             this.placement = placement;
@@ -383,7 +424,9 @@ public class NewAi implements CathedralAI {
                     + "\n=> Score: "
                     + getScore()
                     + "\n The score delta of this piece is: "
-                    + getScoreDelta();
+                    + getScoreDelta()
+                    + "\n Whereas the opponent would gain: "
+                    + getOpponentScore();
         }
 
         /**
@@ -395,8 +438,18 @@ public class NewAi implements CathedralAI {
             return (int) Math.ceil(this.prevent / 2);
         }
 
-        public int getScore() {
-            return this.placement.building().score() -this.getScoreDelta() + this.positions + preventValue();
+        // Getter & Setter
+        // ---------------
+        public double getOpponentScore() {
+            return opponentScore;
+        }
+
+        public void setOpponentScore(double opponentScore) {
+            this.opponentScore = opponentScore;
+        }
+
+        public double getScore() {
+            return this.placement.building().score() - this.getScoreDelta() + this.positions + preventValue() + opponentScore;
         }
 
         public int getPositions() {
@@ -409,6 +462,19 @@ public class NewAi implements CathedralAI {
 
         public Placement getPlacement() {
             return this.placement;
+        }
+
+        @Override
+        public boolean equals(Object obj) {
+            if (obj instanceof PlacementData) {
+                PlacementData testPlacement = (PlacementData) obj;
+                return this.placement.equals(testPlacement)
+                        && this.positions == testPlacement.positions
+                        && this.deltaScore == testPlacement.deltaScore
+                        && this.prevent == testPlacement.prevent;
+            } else {
+                return false;
+            }
         }
     }
 
@@ -455,5 +521,31 @@ public class NewAi implements CathedralAI {
         }
     }
 
+    protected class OpponentWorker extends Thread {
+        // The game that this thread operates on
+        private final Game game;
+        // Data this thread generates
+        private List<PlacementData> data;
+
+        public OpponentWorker(Game game) {
+            this.game = game.copy();
+            data = new ArrayList<PlacementData>();
+            // Jump to the next player
+            game.forfeitTurn();
+        }
+
+        @Override
+        public void run() {
+            // Generate all the placement data that is possible for the opponent
+            Set<PlacementData> opponentPlacements = NewAi.getPlacements(game, 0, 10);
+            this.data.addAll(opponentPlacements);
+            // Sort this list according to it's score, so that the main thread does not have to do this later
+            this.data.sort(Comparator.comparing(PlacementData::getScore));
+        }
+
+        public List<PlacementData> getData() {
+            return this.data;
+        }
+    }
 }
 
