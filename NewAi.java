@@ -151,6 +151,10 @@ public class NewAi implements CathedralAI {
                 System.out.println(loop + " : " + finalListSize);
                 for (int i = 0; i < 2; i++) {
                     for (int j = 0; j < loop; j++) {
+                        // If the bounds are unrealistic, break out from this inner loop
+                        if ((valueSort.size() - (i * j + j) - 1) < 0) {
+                            break;
+                        }
                         // Fetch the placement
                         PlacementData placement = valueSort.get(valueSort.size() - (i * j + j) - 1);
                         // Apply the placement
@@ -186,7 +190,8 @@ public class NewAi implements CathedralAI {
                             .getValue()
                             .stream()
                             .mapToDouble(PlacementData::getScoreDelta)
-                            .average()
+                            // .average()
+                            .max()
                             .orElse(0.0f));
                 }
                 opponentPlacementsToScoreDelta.entrySet().forEach(entry -> entry.getKey().setOpponentScore(entry.getValue()));
