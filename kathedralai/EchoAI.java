@@ -2,6 +2,8 @@ package de.fhkiel.ki.examples.gui.withAi.kathedralai;
 
 import de.fhkiel.ki.ai.CathedralAI;
 import de.fhkiel.ki.cathedral.*;
+import de.fhkiel.ki.examples.gui.withAi.NewAi;
+
 import java.util.HashSet;
 import java.util.Set;
 
@@ -33,6 +35,7 @@ public class EchoAI implements CathedralAI {
 
     @Override
     public void stopAI() {
+
     }
 
 
@@ -131,61 +134,78 @@ public class EchoAI implements CathedralAI {
                     case Blue -> System.out.print(ANSI_BLUE_BACKGROUND + "  " + ANSI_RESET);
                     case None -> System.out.print("  ");
                     default -> System.out.print(currentField + "  ");
-
                 }
             }
             System.out.print("|");
             System.out.println();
         }
     }
-        /**
-         * Calculate the placables that can be put onto the field for the current player
-         *
-         * @param game the game we are working on
-         * @param from the start of the x coordinates to check
-         * @param to   the end of the x coordinates to check
-         * @param checkplacements if the algorithms should check the number of placements
-         *
-         * @return the among of possible placables on this board for the current player
-         */
-        private Set<Placement> getPlacements(Game game, int from, int to, boolean checkplacements) {
-            Set<Placement> possibles = new HashSet<>();
-            for (int x = from; x < to; x++) {
-                for (int y = 0; y < 10; y++) {
-                    checkPlacementData(x, y, game, possibles, checkplacements);
-                }
-            }
-            return possibles;
-        }
 
-        /**
-         * Check the current position and return all blocks that fit there
-         *
-         * @param x    the x coordinate
-         * @param y    the y coordinate
-         * @param game the game to test for
-         * @param data the placement data to write to on success
-         * @param checkPlacements if the algorithm should check the number of placements
-         */
-        private void checkPlacementData(int x, int y, Game game, Set<Placement> data, boolean checkPlacements) {
-            // Fetch the current player
-            Color player = game.getCurrentPlayer();
-            int oldScore = getScore(game, player);
-            // Check, if this current field is applicable for checking it out, specifically if and only if the field belongs
-            // to the current player or to no one at all
-            for (Building building : game.getPlacableBuildings()) {
-                // Test all turnables of the building
-                for (Direction direction : building.getTurnable().getPossibleDirections()) {
-                    Placement possPlacement = new Placement(x, y, direction, building);
-                    // Take a turn using the "fast" method without checking the regions
-                    if (game.takeTurn(possPlacement, true) && checkPlacements) {
+    /**
+     * Calculate the placables that can be put onto the field for the current player
+     *
+     * @param game            the game we are working on
+     * @param from            the start of the x coordinates to check
+     * @param to              the end of the x coordinates to check
+     * @param checkPlacements if the algorithms should check the number of placements
+     * @return the among of possible placables on this board for the current player
+     */
+    private Set<Placement> getPlacements(Game game, int from, int to, boolean checkPlacements) {
+        Set<Placement> possibles = new HashSet<>();
+        for (int x = from; x < to; x++) {
+            for (int y = 0; y < 10; y++) {
+                checkPlacementData(x, y, game, possibles, checkPlacements);
+            }
+        }
+        return possibles;
+    }
+
+    /**
+     * Check the current position and return all blocks that fit there
+     *
+     * @param x               the x coordinate to check for a placement
+     * @param y               the y coordinate to check for a placement
+     * @param game            the game to test for
+     * @param data            the placement data to write to on success
+     * @param checkPlacements if the algorithm should check the number of placements
+     */
+    private void checkPlacementData(int x, int y, Game game, Set<Placement> data, boolean checkPlacements) {
+        // Fetch the current player
+        Color player = game.getCurrentPlayer();
+        int oldScore = getScore(game, player);
+        // Check the regions
+        int placementsStart = checkRegions(game.getBoard().getField(), player).size();
+        // Check, if this current field is applicable for checking it out, specifically if and only if the field belongs
+        // to the current player or to no one at all
+        for (Building building : game.getPlacableBuildings()) {
+            // Test all turnables of the building
+            for (Direction direction : building.getTurnable().getPossibleDirections()) {
+                Placement possPlacement = new Placement(x, y, direction, building);
+                // Take a turn using the "fast" method without checking the regions
+                if (game.takeTurn(possPlacement, true)) {
+                    if (checkPlacements) {
                         // Undo the just-took turn to be able to take a closer look at the regions
                         game.undoLastTurn();
                         // Fetch the regions that are placed at this point
-                        // TODO: Implement/Extend the behavior
+                        game.takeTurn(possPlacement, false);
                         game.undoLastTurn();
                     }
+                    // Add that placement to the list of possible placements
+                    data.add(possPlacement);
                 }
             }
         }
+    }
+
+    /**
+     * Wrapper class around placement data that provides some additional information about the placement
+     */
+    class PlacementData {
+        // The placement in question
+        public Placement placement;
+        // How many regions this placement would capture
+        public Integer capture;
+        // Score that this placement would give to this player
+        public Integer playerScoreDelta;
+    }
 }
