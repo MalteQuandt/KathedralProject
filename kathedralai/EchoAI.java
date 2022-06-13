@@ -144,13 +144,15 @@ public class EchoAI implements CathedralAI {
          * @param game the game we are working on
          * @param from the start of the x coordinates to check
          * @param to   the end of the x coordinates to check
+         * @param checkplacements if the algorithms should check the number of placements
+         *
          * @return the among of possible placables on this board for the current player
          */
-        private Set<Placement> getPlacements(Game game, int from, int to) {
+        private Set<Placement> getPlacements(Game game, int from, int to, boolean checkplacements) {
             Set<Placement> possibles = new HashSet<>();
             for (int x = from; x < to; x++) {
                 for (int y = 0; y < 10; y++) {
-                    checkPlacementData(x, y, game, possibles);
+                    checkPlacementData(x, y, game, possibles, checkplacements);
                 }
             }
             return possibles;
@@ -163,8 +165,9 @@ public class EchoAI implements CathedralAI {
          * @param y    the y coordinate
          * @param game the game to test for
          * @param data the placement data to write to on success
+         * @param checkPlacements if the algorithm should check the number of placements
          */
-        private void checkPlacementData(int x, int y, Game game, Set<Placement> data) {
+        private void checkPlacementData(int x, int y, Game game, Set<Placement> data, boolean checkPlacements) {
             // Fetch the current player
             Color player = game.getCurrentPlayer();
             int oldScore = getScore(game, player);
@@ -175,11 +178,10 @@ public class EchoAI implements CathedralAI {
                 for (Direction direction : building.getTurnable().getPossibleDirections()) {
                     Placement possPlacement = new Placement(x, y, direction, building);
                     // Take a turn using the "fast" method without checking the regions
-                    if (game.takeTurn(possPlacement, true)) {
-                        // Check the number of regions that this placement would provide
+                    if (game.takeTurn(possPlacement, true) && checkPlacements) {
+                        // Undo the just-took turn to be able to take a closer look at the regions
                         game.undoLastTurn();
                         // Fetch the regions that are placed at this point
-
                         // TODO: Implement/Extend the behavior
                         game.undoLastTurn();
                     }
