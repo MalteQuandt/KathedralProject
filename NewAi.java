@@ -93,7 +93,9 @@ public class NewAi implements CathedralAI {
 
             // Create the set union of the possible placements that the current player can make and the region-capturing
             // placements our opponent could make
-            Set<Position> playerPositions = possibles.stream().map(var -> var.getPlacement().position()).collect(Collectors.toSet());
+            Set<Position> playerPositions = possibles.stream()
+                    .map(var -> var.getPlacement().position())
+                    .collect(Collectors.toSet());
 
             // Get the overlapping positions of the placements that both players took this turn
             opponentPositions.retainAll(playerPositions);
@@ -148,7 +150,6 @@ public class NewAi implements CathedralAI {
                 Map<PlacementData, List<PlacementData>> opponentData = new HashMap();
                 Game copy = game.copy();
                 // Fill the available processors
-                System.out.println(loop + " : " + finalListSize);
                 for (int i = 0; i < 2; i++) {
                     for (int j = 0; j < loop; j++) {
                         // If the bounds are unrealistic, break out from this inner loop
@@ -185,13 +186,11 @@ public class NewAi implements CathedralAI {
                 // For each map position, calculate the average score the opponent will get
                 for (Map.Entry<PlacementData, List<PlacementData>> entry : opponentData.entrySet()) {
                     // Calculate the average response of the opponent and store it in another list, or a field in data
-                    // TODO: Calculate the max instead of the average
                     opponentPlacementsToScoreDelta.put(entry.getKey(), entry
                             .getValue()
                             .stream()
                             .mapToDouble(PlacementData::getScoreDelta)
-                            // .average()
-                            .max()
+                            .min()
                             .orElse(0.0f));
                 }
                 opponentPlacementsToScoreDelta.entrySet().forEach(entry -> entry.getKey().setOpponentScore(entry.getValue()));
@@ -309,6 +308,7 @@ public class NewAi implements CathedralAI {
                     Set<Position> newRegions = checkRegions(game.getBoard().getField(), player);
                     // Get the amount of regions that have been added
                     int newRegionSize = newRegions.size() - prevRegions.size();
+                    // Get the current score of the previous player
                     int newScore = getScore(game, player);
                     PlacementData placement = new PlacementData(possPlacement, newRegionSize);
                     placement.newDiff(oldScore, newScore);
@@ -409,6 +409,9 @@ public class NewAi implements CathedralAI {
          * @param newValue the new value of the player score after placing this piece in this exact rotation
          */
         public void newDiff(int oldValue, int newValue) {
+
+            // TODO: Actually calculate the difference between opponent and you that this placement would cause!
+            // TODO: Right now it only calculates your difference!
             this.deltaScore = newValue - oldValue;
         }
 
@@ -454,7 +457,7 @@ public class NewAi implements CathedralAI {
         }
 
         public double getScore() {
-            return this.placement.building().score() - this.getScoreDelta() + this.positions + preventValue() + opponentScore;
+            return this.placement.building().score() - this.getScoreDelta() + this.positions + preventValue() - opponentScore;
         }
 
         public int getPositions() {
@@ -536,7 +539,7 @@ public class NewAi implements CathedralAI {
             this.game = game.copy();
             data = new ArrayList<PlacementData>();
             // Jump to the next player
-            this.game.forfeitTurn();
+            // this.game.forfeitTurn();
         }
 
         @Override
