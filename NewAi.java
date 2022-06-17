@@ -4,6 +4,7 @@ import de.fhkiel.ki.ai.CathedralAI;
 import de.fhkiel.ki.cathedral.*;
 
 import java.util.*;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.stream.Collectors;
 
 public class NewAi implements CathedralAI {
@@ -21,9 +22,17 @@ public class NewAi implements CathedralAI {
     // Threads which the program can use to
     private List<TurnCalculator> threads;
     // How many physical threads the system has access to
-    private int processors;
-
+    private Integer processors;
     private WeightContainer weights;
+    // How many times the thread iteration should take place
+    private Integer iterateOver;
+
+    // Results after a turn was taken
+    private WeightContainer oldWeights;
+    private Color[][] boardState;
+    private PlacementData oldTurn;
+
+    private List<WeightContainer> initials;
 
     @Override
     public String name() {
@@ -35,13 +44,19 @@ public class NewAi implements CathedralAI {
         // Allocate a new thread list
         processors = Runtime.getRuntime().availableProcessors();
         threads = new ArrayList<>(Math.min(processors, 2));
-        // Initialize Container for the weights that are used for calculating the next placement
-        weights = new WeightContainer(-1.0f, 1.0f, 1.0f, .8f, -1.0f);
+        iterateOver = 4;
+        // Set the default values for the weights
+        defensiv();
+        initialize(iterateOver*processors);
+        for(WeightContainer container : initials) {
+            System.out.println(container.toString());
+        }
 
     }
 
     @Override
     public void stopAI() {
+
     }
 
     @Override
@@ -91,13 +106,52 @@ public class NewAi implements CathedralAI {
             bestPlacement = getRandomPlacement(possibles);
         }
         // Print out the time it took to calculate this action
-        printTime(start, System.nanoTime());
+        long endTime = System.nanoTime();
+        printTime(start, endTime);
         // Print confirmation for the finished calculations
         System.out.println(ANSI_GREEN + "[LOG] Done" + ANSI_RESET);
 
         System.out.println(bestPlacement.toWeightedString(weights));
+
+        // Save the values of this iteration
+        this.oldTurn = bestPlacement;
+        this.boardState = copy.getBoard().getField();
+        this.oldWeights = weights;
+
+        System.out.println(iterateOver);
         // Return the calculated action
         return bestPlacement.placement;
+    }
+
+    /**
+     * Compare the new weights and their results to the old weights and their results, and find out if they are better or
+     * worse in comparison.
+     *
+     * @param newWeights the new weights
+     * @param oldWeights the old weights
+     *
+     * @return a score between [-1, 1], where -1 means that oldWeights is better and 1 that newWeights is better
+     */
+    public double evaluation(WeightContainer newWeights, WeightContainer oldWeights) {
+        return 0x0;
+    }
+
+    public void initialize(int initialSize) {
+        initials = new ArrayList<>(initialSize);
+        for(int i = 0 ; i < initialSize ; i++ ) {
+            initials.add(i, new WeightContainer());
+        }
+        initials.forEach(weightContainer -> weightContainer.fill(-3.0f, 3.0f));
+    }
+    public void defensiv() {
+        weights = new WeightContainer(-1.0f, 1.0f, 1.0f, .8f, -1.0f);
+    }
+
+    /**
+     * An aggressive strategies that captures as many regions as possible and tries to get the highest score delta
+     */
+    public void aggressive() {
+        weights = new WeightContainer(-2.0f, 1.0f, 1.0f, 0.2f, -0.2f);
     }
 
     /**
@@ -105,6 +159,7 @@ public class NewAi implements CathedralAI {
      *
      * @param copy            the copy of the game on which to operate
      * @param finalPlacements the final placements to check the future for
+     *
      * @return the best placement according to a score function
      */
     public PlacementData calculateFinalPlacement(Game copy, Set<PlacementData> finalPlacements) {
@@ -115,8 +170,6 @@ public class NewAi implements CathedralAI {
         List<OpponentWorker> opponentWorkers = new ArrayList<>(100);
         // The data for the opponents possible reactions
         Map<PlacementData, List<PlacementData>> opponentData = new HashMap<>();
-        // How many placements to iterate over
-        final Integer iterateOver = 5;
 
         // 1. Select the placement that has the highest point value
         List<PlacementData> highestScorePlacement = finalPlacements
@@ -137,7 +190,9 @@ public class NewAi implements CathedralAI {
 
         Map<PlacementData, Double> opponentPlacementsToScoreDelta = mapOpponentResultsToPlacements(opponentData);
         // Choose the placement as the best, that has the lowest gain for the opponent in the next turn:
-        return calculateOptimalPlacement(opponentPlacementsToScoreDelta);
+        PlacementData bestPlacement = calculateOptimalPlacement(opponentPlacementsToScoreDelta);
+
+        return bestPlacement;
     }
 
 
@@ -320,20 +375,6 @@ public class NewAi implements CathedralAI {
         return finalPlacements;
     }
 
-    /**
-     * An aggressive strategie that captures as many regions as possible and tries to get the highest score delta
-     */
-    public void aggressive() {
-        // TODO:
-    }
-
-    /**
-     * A defensive strategie that tries to prevent as many captures from the opposing player as possible, try to keep the
-     * score delta of the opposing player at a minimum
-     */
-    public void defensive() {
-        // TODO:
-    }
 
     // Utility Methods
     // ---------------
@@ -451,6 +492,14 @@ public class NewAi implements CathedralAI {
         }
     }
 
+    /**
+     * calculate the score of a given player at any given point in time
+     *
+     * @param game
+     * @param player
+     *
+     * @return
+     */
     private static Integer getScore(Game game, Color player) {
         Object a = game.score().get(player);
         if (a != null) {
@@ -734,6 +783,34 @@ class WeightContainer {
         this.preventWeight = preventWeight;
         this.scoreWeight = scoreWeight;
         this.scoreDeltaWeight = scoreDeltaWeight;
+    }
+
+    public WeightContainer() {
+        this.captureWeight = 0;
+        this.opponentWeight = 0;
+        this.preventWeight = 0;
+        this.scoreWeight = 0;
+        this.scoreDeltaWeight = 0;
+    }
+
+    /**
+     * Fill each of the values with an initial value that is inside the given range
+     *
+     * @param start the start of the range
+     * @param end   the end of the range
+     */
+    public void fill(double start, double end) {
+        this.captureWeight = ThreadLocalRandom.current().nextDouble(start, end + 1);
+        this.scoreWeight = ThreadLocalRandom.current().nextDouble(start, end + 1);
+        this.scoreDeltaWeight = ThreadLocalRandom.current().nextDouble(start, end + 1);
+        this.preventWeight = ThreadLocalRandom.current().nextDouble(start, end + 1);
+        this.opponentWeight = ThreadLocalRandom.current().nextDouble(start, end + 1);
+    }
+
+
+    @Override
+    public String toString() {
+        return this.captureWeight + " : " + this.scoreWeight + " : " + this.scoreDeltaWeight + " : " + this.preventWeight + " : " + this.opponentWeight;
     }
 
 }
