@@ -23,15 +23,11 @@ public class NewAi implements CathedralAI {
     private List<TurnCalculator> threads;
     // How many physical threads the system has access to
     private Integer processors;
+    // The weights that are used to find the best placement from a collection of placements
     private WeightContainer weights;
     // How many times the thread iteration should take place
     private Integer iterateOver;
-
-    // Results after a turn was taken
-    private WeightContainer oldWeights;
-    private Color[][] boardState;
-    private PlacementData oldTurn;
-
+    // Initial list of weight combinations
     private List<WeightContainer> initials;
 
     @Override
@@ -47,20 +43,18 @@ public class NewAi implements CathedralAI {
         iterateOver = 4;
         // Set the default values for the weights
         defensiv();
-        initialize(iterateOver*processors);
-        for(WeightContainer container : initials) {
-            System.out.println(container.toString());
-        }
-
     }
 
     @Override
-    public void stopAI() {
-
-    }
+    public void stopAI() {}
 
     @Override
     public Placement takeTurn(Game game) {
+        mutate(iterateOver * processors);
+        System.out.println(weights + "\n");
+        for (WeightContainer container : initials) {
+            System.out.println(container.toString());
+        }
         // Fetch the start time of the function
         long start = System.nanoTime();
         Game copy = game.copy();
@@ -113,36 +107,26 @@ public class NewAi implements CathedralAI {
 
         System.out.println(bestPlacement.toWeightedString(weights));
 
-        // Save the values of this iteration
-        this.oldTurn = bestPlacement;
-        this.boardState = copy.getBoard().getField();
-        this.oldWeights = weights;
-
         System.out.println(iterateOver);
         // Return the calculated action
+        System.out.println(weights);
         return bestPlacement.placement;
     }
 
     /**
-     * Compare the new weights and their results to the old weights and their results, and find out if they are better or
-     * worse in comparison.
+     * Generate an initial range of solutions and mutates them
      *
-     * @param newWeights the new weights
-     * @param oldWeights the old weights
-     *
-     * @return a score between [-1, 1], where -1 means that oldWeights is better and 1 that newWeights is better
+     * @param initialSize the initial range of solutions
      */
-    public double evaluation(WeightContainer newWeights, WeightContainer oldWeights) {
-        return 0x0;
-    }
-
-    public void initialize(int initialSize) {
+    public void mutate(int initialSize) {
         initials = new ArrayList<>(initialSize);
-        for(int i = 0 ; i < initialSize ; i++ ) {
+        for (int i = 0; i < initialSize; i++) {
             initials.add(i, new WeightContainer());
         }
-        initials.forEach(weightContainer -> weightContainer.fill(-3.0f, 3.0f));
+        // Mutates the values in the initials
+        initials.forEach(weightContainer -> weightContainer.mutateAdditively(weights, -0.02, 0.02));
     }
+
     public void defensiv() {
         weights = new WeightContainer(-1.0f, 1.0f, 1.0f, .8f, -1.0f);
     }
@@ -159,7 +143,6 @@ public class NewAi implements CathedralAI {
      *
      * @param copy            the copy of the game on which to operate
      * @param finalPlacements the final placements to check the future for
-     *
      * @return the best placement according to a score function
      */
     public PlacementData calculateFinalPlacement(Game copy, Set<PlacementData> finalPlacements) {
@@ -186,15 +169,48 @@ public class NewAi implements CathedralAI {
 
         // Iterate over the best placements and look into what the opponent might possibly react with,
         // and fill those reactions into a list
-        calculateOpponentsReactions(copy, iterateOver, loop, opponentWorkers, opponentData, highestScorePlacement);
+        Map<WeightContainer, PlacementData> weightContainerPlacementDataMap = calculateOpponentsReactionsForGivenWeights(copy, iterateOver, loop, opponentWorkers, opponentData, highestScorePlacement);
 
         Map<PlacementData, Double> opponentPlacementsToScoreDelta = mapOpponentResultsToPlacements(opponentData);
         // Choose the placement as the best, that has the lowest gain for the opponent in the next turn:
         PlacementData bestPlacement = calculateOptimalPlacement(opponentPlacementsToScoreDelta);
 
+        // Get the weight for the best placement
+        this.weights = weightContainerPlacementDataMap
+                .entrySet()
+                .stream()
+                .filter(entry -> Objects.equals(entry.getValue(), bestPlacement))
+                .map(Map.Entry::getKey)
+                .collect(Collectors.toList()).get(0);
         return bestPlacement;
     }
 
+    /**
+     * From a given range of weight container to placement data, calculate the average weight for the top n placements
+     * @param weightContainerPlacementDataMap
+     * @param n
+     * @return
+     */
+    WeightContainer calculateNewAverageWeight(Map<WeightContainer, PlacementData> weightContainerPlacementDataMap, int n) {
+        WeightContainer container = new WeightContainer();
+        int numberElements = weightContainerPlacementDataMap.size();
+        // Adds the number of elements on top of each other
+        for(Map.Entry<WeightContainer, PlacementData> c : weightContainerPlacementDataMap.entrySet()) {
+            container.opponentWeight += c.getKey().opponentWeight;
+            container.scoreWeight += c.getKey().scoreWeight;
+            container.captureWeight += c.getKey().captureWeight;
+            container.scoreDeltaWeight += c.getKey().scoreDeltaWeight;
+            container.preventWeight += c.getKey().preventWeight;
+        }
+        // Divide by the number of elements
+        container.opponentWeight /= numberElements;
+        container.scoreWeight /= numberElements;
+        container.captureWeight/= numberElements;
+        container.scoreDeltaWeight /= numberElements;
+        container.preventWeight /= numberElements;
+
+        return container;
+    }
 
     /**
      * Map the opponents reactions onto opponentData field of the placement they were reacting to.
@@ -237,9 +253,68 @@ public class NewAi implements CathedralAI {
         return finalData.get(finalData.size() - 1);
     }
 
+
+    public Map<WeightContainer, PlacementData> calculateOpponentsReactionsForGivenWeights(
+            Game copy,
+            final Integer iterateOver,
+            final Integer loop,
+            List<OpponentWorker> opponentWorkers,
+            Map<PlacementData, List<PlacementData>> opponentData,
+            List<PlacementData> highestScorePlacement) {
+        Map<WeightContainer, PlacementData> weightContainerPlacementDataHashMap = new HashMap<>();
+        for (int i = 0; i < iterateOver; i++) {
+            for (int j = 0; j < loop; j++) {
+                // If the bounds are unrealistic, break out from this inner loop
+                if ((highestScorePlacement.size() - (iterateOver * j + j) - 1) < 0) {
+                    break;
+                }
+                final Integer finalI = i;
+                final Integer finalJ = j;
+                // Sort the placement list according to a given score function weighted by a weight
+                WeightContainer container = initials.get(iterateOver * finalI + finalJ);
+                // Calculate the best placements for any given weight in the initials list
+                PlacementData placement = highestScorePlacement
+                        .stream()
+                        .sorted(Comparator.comparing(placementData -> placementData.getScore(container)))
+                        .collect(Collectors.toList())
+                        .get(highestScorePlacement.size() - (iterateOver * j + j) - 1);
+                // Put the {Weight, Placement} map into the container
+                weightContainerPlacementDataHashMap.put(container, placement);
+                // Apply the placement
+                copy.takeTurn(placement.getPlacement());
+                // Calculate the next turn of the opponent
+                opponentWorkers.add(new OpponentWorker(copy));
+                // Create a link between the data storage in the thread and the belonging
+                opponentData.put(placement, opponentWorkers.get(j).getData());
+                // Reset the previously generated turn
+                copy.undoLastTurn();
+
+            }
+            // Fill the work calculators
+            for (OpponentWorker worker : opponentWorkers) {
+                worker.start();
+            }
+            // Wait for those threads to finish execution
+            for (OpponentWorker worker : opponentWorkers) {
+                try {
+                    worker.join();
+                } catch (InterruptedException e) {
+                    e.printStackTrace();
+                }
+            }
+            // Last iteration, thus we clear the opponent workers
+            opponentWorkers.clear();
+        }
+        return weightContainerPlacementDataHashMap;
+    }
+
+    public void evaluate(WeightContainer weights, Game game, Game previous) {
+
+    }
+
     /**
      * For each of the best placements that were previously calculated, calculate the reaction that the opponent might make
-     * on a seperate thread.
+     * on a separate thread.
      *
      * @param copy
      * @param iterateOver
@@ -497,7 +572,6 @@ public class NewAi implements CathedralAI {
      *
      * @param game
      * @param player
-     *
      * @return
      */
     private static Integer getScore(Game game, Color player) {
@@ -805,6 +879,34 @@ class WeightContainer {
         this.scoreDeltaWeight = ThreadLocalRandom.current().nextDouble(start, end + 1);
         this.preventWeight = ThreadLocalRandom.current().nextDouble(start, end + 1);
         this.opponentWeight = ThreadLocalRandom.current().nextDouble(start, end + 1);
+    }
+
+    /**
+     * Copy the values in the weightcontainer argument and mutate them using the [start, end-1] range of integers by
+     * adding that range on top of the initail container values
+     *
+     * @param container the container to mutate
+     */
+    public void mutateAdditively(WeightContainer container, double start, double end) {
+        this.captureWeight = container.captureWeight + ThreadLocalRandom.current().nextDouble(start, end);
+        this.scoreWeight = container.scoreWeight + ThreadLocalRandom.current().nextDouble(start, end);
+        this.scoreDeltaWeight = container.scoreDeltaWeight + ThreadLocalRandom.current().nextDouble(start, end);
+        this.preventWeight = container.scoreWeight + ThreadLocalRandom.current().nextDouble(start, end);
+        this.opponentWeight = container.opponentWeight + ThreadLocalRandom.current().nextDouble(start, end);
+    }
+
+    /**
+     * Copy the values in the weightcontainer argument and mutate them using the [start, end-1] range of integers by
+     * multiplying that range on top of the initail container values
+     *
+     * @param container the container to mutate
+     */
+    public void mutateMultiplicatively(WeightContainer container, double start, double end) {
+        this.captureWeight = container.captureWeight * ThreadLocalRandom.current().nextDouble(start, end);
+        this.scoreWeight = container.scoreWeight * ThreadLocalRandom.current().nextDouble(start, end);
+        this.scoreDeltaWeight = container.scoreDeltaWeight * ThreadLocalRandom.current().nextDouble(start, end);
+        this.preventWeight = container.scoreWeight * ThreadLocalRandom.current().nextDouble(start, end);
+        this.opponentWeight = container.opponentWeight * ThreadLocalRandom.current().nextDouble(start, end);
     }
 
 
