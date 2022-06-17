@@ -4,7 +4,6 @@ import de.fhkiel.ki.ai.CathedralAI;
 import de.fhkiel.ki.cathedral.*;
 
 import java.util.*;
-import java.util.function.Consumer;
 import java.util.stream.Collectors;
 
 public class NewAi implements CathedralAI {
@@ -24,6 +23,8 @@ public class NewAi implements CathedralAI {
     // How many physical threads the system has access to
     private int processors;
 
+    private WeightContainer weights;
+
     @Override
     public String name() {
         return "Team ECHO";
@@ -34,6 +35,9 @@ public class NewAi implements CathedralAI {
         // Allocate a new thread list
         processors = Runtime.getRuntime().availableProcessors();
         threads = new ArrayList<>(Math.min(processors, 2));
+        // Initialize Container for the weights that are used for calculating the next placement
+        weights = new WeightContainer(-1.0f, 1.0f, 1.0f, .8f, -1.0f);
+
     }
 
     @Override
@@ -44,12 +48,13 @@ public class NewAi implements CathedralAI {
     public Placement takeTurn(Game game) {
         // Fetch the start time of the function
         long start = System.nanoTime();
+        Game copy = game.copy();
         PlacementData bestPlacement;
         System.out.println(ANSI_GREEN + "[LOG] Capture percepts" + ANSI_RESET);
         // Get the percept:
         // ---------------
-        Set<PlacementData> possibles;
-        Set<PlacementData> opponentsPlacements;
+        Set<PlacementData> possibles = new HashSet<>();
+        Set<PlacementData> opponentsPlacements = new HashSet<>();
         // Check if the opponents next placement would result in a captured region
         // ------------------------------------------------------------------------
         // 1. Assume the position of the opponent
@@ -59,8 +64,281 @@ public class NewAi implements CathedralAI {
         // ------------------------------------------------
         // Test all buildings
         // Test every position on the board and filter any turn that is not possible
-        // Iterate over the board positions
-        // Generate the worker threads
+        calculatePossiblesAndOpponentsPlacements(copy, opponentsPlacements, possibles);
+
+        // We don't have to calculate anything else if the field is empty
+        if (!copy.getBoard().getPlacedBuildings().isEmpty()) {
+            // 2. Filter for the positions that would capture regions
+            Set<PlacementData> finalPlacements = getOverlappingPlacements(copy, opponentsPlacements, possibles);
+
+            System.out.println(ANSI_GREEN + "[LOG] Calculate optimal position" + ANSI_RESET);
+            // Calculate the average positions that the opponent would capture at each position
+            calculatePreventedCaptures(finalPlacements, opponentsPlacements);
+            // Add all possibles to the finals that have just been calculated
+            finalPlacements.addAll(possibles);
+
+            // Apply rule-set on possible turns:
+            // ---------------------------------
+
+            // abort, as there are no placements possible!
+            if (finalPlacements.isEmpty()) {
+                skip();
+                return null;
+            }
+            bestPlacement = calculateFinalPlacement(copy, finalPlacements);
+        } else {
+            // Get a random placement of the list
+            bestPlacement = getRandomPlacement(possibles);
+        }
+        // Print out the time it took to calculate this action
+        printTime(start, System.nanoTime());
+        // Print confirmation for the finished calculations
+        System.out.println(ANSI_GREEN + "[LOG] Done" + ANSI_RESET);
+
+        System.out.println(bestPlacement.toWeightedString(weights));
+        // Return the calculated action
+        return bestPlacement.placement;
+    }
+
+    /**
+     * Calculate the best placements for a given set of placement data
+     *
+     * @param copy            the copy of the game on which to operate
+     * @param finalPlacements the final placements to check the future for
+     * @return the best placement according to a score function
+     */
+    public PlacementData calculateFinalPlacement(Game copy, Set<PlacementData> finalPlacements) {
+        // 0. Setup:
+        // ---------
+        // Take a realistic amount of processors from the system for this application
+        int availableProcessors = (processors > 2) ? (processors - 2) : 2;
+        List<OpponentWorker> opponentWorkers = new ArrayList<>(100);
+        // The data for the opponents possible reactions
+        Map<PlacementData, List<PlacementData>> opponentData = new HashMap<>();
+        // How many placements to iterate over
+        final Integer iterateOver = 5;
+
+        // 1. Select the placement that has the highest point value
+        List<PlacementData> highestScorePlacement = finalPlacements
+                .stream()
+                .sorted(Comparator.comparing(placementData -> placementData.getScore(weights)))
+                .toList();
+
+        // Get the size of the list so that the loop variable can be accurately determined
+        int finalListSize = highestScorePlacement.size();
+        // Iterate over the list for the amount of processors available, and with at least 1 thread
+        int loop = Math.max(Math.min(finalListSize, availableProcessors), 1);
+
+        System.out.println(ANSI_GREEN + "[LOG] For each placement, predict the opponents possible reaction" + ANSI_RESET);
+
+        // Iterate over the best placements and look into what the opponent might possibly react with,
+        // and fill those reactions into a list
+        calculateOpponentsReactions(copy, iterateOver, loop, opponentWorkers, opponentData, highestScorePlacement);
+
+        Map<PlacementData, Double> opponentPlacementsToScoreDelta = mapOpponentResultsToPlacements(opponentData);
+        // Choose the placement as the best, that has the lowest gain for the opponent in the next turn:
+        return calculateOptimalPlacement(opponentPlacementsToScoreDelta);
+    }
+
+
+    /**
+     * Map the opponents reactions onto opponentData field of the placement they were reacting to.
+     *
+     * @param opponentData the mapping of placement to opponents reaction
+     * @return the mapping of placement to opponents reaction minimized using an aggregate function [min, max, avg, ...]
+     */
+    public Map<PlacementData, Double> mapOpponentResultsToPlacements(Map<PlacementData, List<PlacementData>> opponentData) {
+        Map<PlacementData, Double> opponentPlacementsToScoreDelta = new HashMap<>();
+        // For each map position, calculate the best score the opponent will get
+        for (Map.Entry<PlacementData, List<PlacementData>> entry : opponentData.entrySet()) {
+            // Calculate the average response of the opponent and store it in another list, or a field in data
+            opponentPlacementsToScoreDelta.put(entry.getKey(), entry
+                    .getValue()
+                    .stream()
+                    .mapToDouble(value -> value.getScore(weights))
+                    .max()
+                    .orElse(0.0f));
+        }
+        // For each placement key in the map, set the opponent score to the map value
+        opponentPlacementsToScoreDelta.entrySet().forEach(entry -> entry.getKey().setOpponentScore(entry.getValue()));
+
+        // Return the mapping
+        return opponentPlacementsToScoreDelta;
+    }
+
+    /**
+     * From a given map of placement to double mapping, calculate the placement that has the highest score value according
+     * to a selected function
+     *
+     * @param opponentPlacementsToScoreDelta mapping of placement to the average opponent reaction
+     * @return the optimal placement according to a function
+     */
+    public PlacementData calculateOptimalPlacement(Map<PlacementData, Double> opponentPlacementsToScoreDelta) {
+        // Sor the list according to
+        List<PlacementData> finalData = opponentPlacementsToScoreDelta.entrySet().stream()
+                .map(Map.Entry::getKey)
+                .sorted(Comparator.comparing(placementData -> placementData.getScore(weights)))
+                .toList();
+        return finalData.get(finalData.size() - 1);
+    }
+
+    /**
+     * For each of the best placements that were previously calculated, calculate the reaction that the opponent might make
+     * on a seperate thread.
+     *
+     * @param copy
+     * @param iterateOver
+     * @param loop
+     * @param opponentWorkers
+     * @param opponentData
+     * @param highestScorePlacement
+     */
+    public void calculateOpponentsReactions(Game copy, final Integer iterateOver, final Integer loop,
+                                            List<OpponentWorker> opponentWorkers,
+                                            Map<PlacementData, List<PlacementData>> opponentData,
+                                            List<PlacementData> highestScorePlacement
+    ) {
+        for (int i = 0; i < iterateOver; i++) {
+            for (int j = 0; j < loop; j++) {
+                // If the bounds are unrealistic, break out from this inner loop
+                if ((highestScorePlacement.size() - (iterateOver * j + j) - 1) < 0) {
+                    break;
+                }
+                setupOpponentWorkerThread(copy, i, j, iterateOver, opponentWorkers, opponentData, highestScorePlacement);
+
+            }
+            // Fill the work calculators
+            for (OpponentWorker worker : opponentWorkers) {
+                worker.start();
+            }
+            // Wait for those threads to finish execution
+            for (OpponentWorker worker : opponentWorkers) {
+                try {
+                    worker.join();
+                } catch (InterruptedException e) {
+                    e.printStackTrace();
+                }
+            }
+            // Last iteration, thus we clear the opponent workers
+            opponentWorkers.clear();
+        }
+    }
+
+    /**
+     * Set up the worker threads for a given placement and calculate the opponents reactions with it
+     *
+     * @param copy
+     * @param i
+     * @param j
+     * @param opponentWorkers
+     * @param opponentData
+     * @param highestScorePlacement
+     */
+    public void setupOpponentWorkerThread(
+            Game copy,
+            int i, int j,
+            int iterateOver,
+            List<OpponentWorker> opponentWorkers,
+            Map<PlacementData, List<PlacementData>> opponentData,
+            List<PlacementData> highestScorePlacement) {
+        // Fetch the placement
+        PlacementData placement = highestScorePlacement.get(highestScorePlacement.size() - (iterateOver * j + j) - 1);
+        // Apply the placement
+        copy.takeTurn(placement.getPlacement());
+        // Calculate the next turn of the opponent
+        opponentWorkers.add(new OpponentWorker(copy));
+        // Create a link between the data storage in the thread and the belonging
+        opponentData.put(placement, opponentWorkers.get(j).getData());
+        // Reset the previously generated turn
+        copy.undoLastTurn();
+    }
+
+    /**
+     * Get a random element from a set of placement data
+     *
+     * @param placementDataSet the set to get the random element from
+     * @return the random element
+     */
+    public PlacementData getRandomPlacement(Set<PlacementData> placementDataSet) {
+        return placementDataSet.stream().skip((int) (placementDataSet.size() * Math.random())).findFirst().get();
+    }
+
+    /**
+     * Calculate the regions that each opposing placement would capture at each position, and apply that using a
+     * aggregate function [min, max, avg,...] to the final placement data
+     *
+     * @param finalPlacements
+     * @param opponentsPlacements
+     */
+    public void calculatePreventedCaptures(Set<PlacementData> finalPlacements, Set<PlacementData> opponentsPlacements) {
+        finalPlacements.forEach(placed -> placed.prevent =
+                opponentsPlacements.stream()
+                        .filter(data -> data.placement.position().equals(placed.placement.position()))
+                        .mapToDouble(PlacementData::getPositions)
+                        .max()
+                        .orElse(0.0)
+        );
+    }
+
+    /**
+     * Filter for all the placements that have overlapping positions in the possibles and the possibles for the opponent
+     *
+     * @param opponentsPlacements the opponents placements
+     * @param possibles           the possible placements for the current player
+     * @return
+     */
+    public Set<PlacementData> getOverlappingPlacements(Game copy, Set<PlacementData> opponentsPlacements, Set<PlacementData> possibles) {
+        opponentsPlacements.removeIf(placementData -> placementData.positions == -1);
+        // Get the set of all positions
+        Set<Position> opponentPositions = (opponentsPlacements
+                .stream()
+                .map(var -> var.getPlacement().position()))
+                .collect(Collectors.toSet());
+
+        // Create the set union of the possible placements that the current player can make and the region-capturing
+        // placements our opponent could make
+        Set<Position> playerPositions = possibles.stream()
+                .map(var -> var.getPlacement().position())
+                .collect(Collectors.toSet());
+
+        // Get the overlapping positions of the placements that both players took this turn
+        opponentPositions.retainAll(playerPositions);
+
+        Set<PlacementData> finalPlacements = new HashSet<>();
+        // Calculate all the position that
+        Set<PlacementData> finalPlacements1 = finalPlacements;
+
+        opponentPositions.forEach(pos -> checkPlacementData(pos.x(), pos.y(), copy, finalPlacements1, true));
+
+        // If there are no more overlapping positions, then take the optimal data form the player
+        if (finalPlacements.size() == 0 || finalPlacements == null) {
+            finalPlacements = possibles;
+        } else {
+            finalPlacements = finalPlacements1;
+        }
+
+        return finalPlacements;
+    }
+
+    /**
+     * An aggressive strategie that captures as many regions as possible and tries to get the highest score delta
+     */
+    public void aggressive() {
+        // TODO:
+    }
+
+    /**
+     * A defensive strategie that tries to prevent as many captures from the opposing player as possible, try to keep the
+     * score delta of the opposing player at a minimum
+     */
+    public void defensive() {
+        // TODO:
+    }
+
+    // Utility Methods
+    // ---------------
+
+    public void calculatePossiblesAndOpponentsPlacements(Game game, Set<PlacementData> opponentPlacements, Set<PlacementData> possibles) {
         threads.add(0, new TurnCalculator(game, true, 0, 10));
         threads.add(1, new TurnCalculator(game, false, 0, 10));
         // Start the threads
@@ -75,158 +353,11 @@ public class NewAi implements CathedralAI {
             }
         });
         // Fetch the data from the threads
-        opponentsPlacements = threads.get(0).getData();
-        possibles = threads.get(1).getData();
+        opponentPlacements.addAll(threads.get(0).getData());
+        possibles.addAll(threads.get(1).getData());
         // Clear the thread list, as it is no longer needed
         threads.clear();
-        // We don't have to calculate anything else if the field is empty
-        if (!game.getBoard().getPlacedBuildings().isEmpty()) {
-
-
-            // 2. Filter for the positions that would capture regions
-            opponentsPlacements.removeIf(placementData -> placementData.positions == -1);
-            // Get the set of all positions
-            Set<Position> opponentPositions = (opponentsPlacements
-                    .stream()
-                    .map(var -> var.getPlacement().position()))
-                    .collect(Collectors.toSet());
-
-            // Create the set union of the possible placements that the current player can make and the region-capturing
-            // placements our opponent could make
-            Set<Position> playerPositions = possibles.stream()
-                    .map(var -> var.getPlacement().position())
-                    .collect(Collectors.toSet());
-
-            // Get the overlapping positions of the placements that both players took this turn
-            opponentPositions.retainAll(playerPositions);
-
-            Set<PlacementData> finalPlacements = new HashSet<>();
-            // Calculate all the position that
-            Set<PlacementData> finalPlacements1 = finalPlacements;
-            opponentPositions.forEach(pos -> checkPlacementData(pos.x(), pos.y(), game, finalPlacements1));
-
-            System.out.println(ANSI_GREEN + "[LOG] Calculate optimal position" + ANSI_RESET);
-            // If there are no more overlapping positions, then take the optimal data form the player
-            if (opponentPositions.size() == 0) {
-                finalPlacements = possibles;
-            }
-            // Calculate the data on the
-            finalPlacements.forEach(placed -> placed.prevent =
-                    opponentsPlacements.stream()
-                            .filter(data -> data.placement.position().equals(placed.placement.position()))
-                            .mapToDouble(PlacementData::getPositions)
-                            .average()
-                            .orElse(0.0)
-            );
-            // Add all possibles to the finals that have just been calculated
-            finalPlacements.addAll(possibles);
-
-            // Apply rule-set on possible turns:
-            // ---------------------------------
-
-            // abort, as there are no placements possible!
-            if (finalPlacements.isEmpty()) {
-                skip();
-                return null;
-            }
-            // Select the placement that has the highest point value
-            List<PlacementData> valueSort = finalPlacements
-                    .stream()
-                    .sorted(Comparator.comparing(PlacementData::getScore))
-                    .toList();
-            // Fetch the best placement from the value list
-            bestPlacement = valueSort.get(valueSort.size() - 1);
-
-            System.out.println(ANSI_GREEN + "[LOG] Predicting opponents gain" + ANSI_RESET);
-            {
-                // Take a realistic amount of processors from the system for this application
-                int availableProcessors = (processors > 2) ? (processors - 2) : 2;
-                List<OpponentWorker> opponentWorkers = new ArrayList<>(100);
-                // Check for each of the selected top positions
-                // Get the size of the list so that
-                int finalListSize = valueSort.size();
-                // Iterate over the list for the amount of processors available, and with at least 1 thread
-                int loop = Math.max(Math.min(finalListSize, availableProcessors), 1);
-                Map<PlacementData, List<PlacementData>> opponentData = new HashMap();
-                Game copy = game.copy();
-                // Fill the available processors
-                for (int i = 0; i < 2; i++) {
-                    for (int j = 0; j < loop; j++) {
-                        // If the bounds are unrealistic, break out from this inner loop
-                        if ((valueSort.size() - (i * j + j) - 1) < 0) {
-                            break;
-                        }
-                        // Fetch the placement
-                        PlacementData placement = valueSort.get(valueSort.size() - (i * j + j) - 1);
-                        // Apply the placement
-                        copy.takeTurn(placement.getPlacement());
-                        // Calculate the next turn of the opponent
-                        opponentWorkers.add(new OpponentWorker(game));
-                        // Create a link between the data storage in the thread and the belonging
-                        opponentData.put(placement, opponentWorkers.get(j).getData());
-                        // Reset the previously generated turn
-                        copy.undoLastTurn();
-                    }
-                    // Fill the work calculators
-                    for (OpponentWorker worker : opponentWorkers) {
-                        worker.start();
-                    }
-                    // Wait for those threads to finish execution
-                    for (OpponentWorker worker : opponentWorkers) {
-                        try {
-                            worker.join();
-                        } catch (InterruptedException e) {
-                            e.printStackTrace();
-                        }
-                    }
-                    // Last iteration, thus we clear the opponent workers
-                    opponentWorkers.clear();
-                }
-                Map<PlacementData, Double> opponentPlacementsToScoreDelta = new HashMap<>();
-                // For each map position, calculate the average score the opponent will get
-                for (Map.Entry<PlacementData, List<PlacementData>> entry : opponentData.entrySet()) {
-                    // Calculate the average response of the opponent and store it in another list, or a field in data
-                    opponentPlacementsToScoreDelta.put(entry.getKey(), entry
-                            .getValue()
-                            .stream()
-                            .mapToDouble(PlacementData::getScoreDelta)
-                            .min()
-                            .orElse(0.0f));
-                }
-                opponentPlacementsToScoreDelta.entrySet().forEach(entry -> entry.getKey().setOpponentScore(entry.getValue()));
-                // Sort the list according to the average opponent placement data
-                List<Map.Entry<PlacementData, Double>> sortedOpponentPlacements = opponentPlacementsToScoreDelta
-                        .entrySet()
-                        .stream()
-                        .sorted(Map.Entry.comparingByValue())
-                        .toList();
-                List<PlacementData> finalData = sortedOpponentPlacements
-                        .stream()
-                        .map(data -> data.getKey())
-                        .sorted(Comparator.comparing(PlacementData::getScore))
-                        .toList();
-                System.out.println("smallest index: " + finalData.get(0));
-                System.out.println("highest index: " + finalData.get(finalData.size() - 1));
-                // Choose the placment as the best, that has the lowest gain for the opponent in the next turn:
-                bestPlacement = finalData.get(finalData.size() - 1);
-            }
-        } else {
-            // Get a random placement of the list
-            bestPlacement = possibles.stream().skip((int) (possibles.size() * Math.random())).findFirst().get();
-        }
-        // Print out the time it took to calculate this action
-        printTime(start, System.nanoTime());
-        // Print confirmation for the finished calculations
-        System.out.println(ANSI_GREEN + "[LOG] Done" + ANSI_RESET);
-
-        System.out.println(bestPlacement.toString());
-        // Return the calculated action
-        return bestPlacement.placement;
     }
-
-
-    // Utility Methods
-    // ---------------
 
     /**
      * Print the time that this function took to execute and print it in a more pretty way.
@@ -269,11 +400,11 @@ public class NewAi implements CathedralAI {
      * @param to   the end of the x coordinates to check
      * @return the among of possible placables on this board for the current player
      */
-    private static Set<PlacementData> getPlacements(Game game, int from, int to) {
+    private static Set<PlacementData> getPlacements(Game game, int from, int to, boolean getRegions) {
         Set<PlacementData> possibles = new HashSet<>();
         for (int x = from; x < to; x++) {
             for (int y = 0; y < 10; y++) {
-                checkPlacementData(x, y, game, possibles);
+                checkPlacementData(x, y, game, possibles, getRegions);
             }
         }
         return possibles;
@@ -287,7 +418,7 @@ public class NewAi implements CathedralAI {
      * @param game the game to test for
      * @param data the placement data to write to on success
      */
-    private static void checkPlacementData(int x, int y, Game game, Set<PlacementData> data) {
+    private static void checkPlacementData(int x, int y, Game game, Set<PlacementData> data, boolean getRegions) {
         // Fetch the current player
         Color player = game.getCurrentPlayer();
         int oldScore = getScore(game, player);
@@ -310,7 +441,7 @@ public class NewAi implements CathedralAI {
                     int newRegionSize = newRegions.size() - prevRegions.size();
                     // Get the current score of the previous player
                     int newScore = getScore(game, player);
-                    PlacementData placement = new PlacementData(possPlacement, newRegionSize);
+                    PlacementData placement = new PlacementData(possPlacement, getRegions ? newRegionSize : 0);
                     placement.newDiff(oldScore, newScore);
                     // We can take a turn, thus we add it to the "possible" set
                     data.add(placement);
@@ -409,9 +540,6 @@ public class NewAi implements CathedralAI {
          * @param newValue the new value of the player score after placing this piece in this exact rotation
          */
         public void newDiff(int oldValue, int newValue) {
-
-            // TODO: Actually calculate the difference between opponent and you that this placement would cause!
-            // TODO: Right now it only calculates your difference!
             this.deltaScore = newValue - oldValue;
         }
 
@@ -419,23 +547,6 @@ public class NewAi implements CathedralAI {
             return this.deltaScore;
         }
 
-        @Override
-        public String toString() {
-            return "Placement: "
-                    + this.placement.toString()
-                    + "\nRegions: "
-                    + getPositions()
-                    + "\nScore: "
-                    + getScore()
-                    + "\nPrevents: "
-                    + getPrevent()
-                    + "\n=> Score: "
-                    + getScore()
-                    + "\n The score delta of this piece is: "
-                    + getScoreDelta()
-                    + "\n Whereas the opponent would gain: "
-                    + getOpponentScore();
-        }
 
         /**
          * Here you can scale how much the prevention value matters for these calculations
@@ -456,8 +567,54 @@ public class NewAi implements CathedralAI {
             this.opponentScore = opponentScore;
         }
 
-        public double getScore() {
-            return this.placement.building().score() - this.getScoreDelta() + this.positions + preventValue() - opponentScore;
+        public double getScore(WeightContainer weights) {
+            return getScore(weights.scoreDeltaWeight, weights.scoreWeight, weights.captureWeight, weights.preventWeight, weights.opponentWeight);
+        }
+
+        public double getScore(double scoreDeltaWeight, double scoreWeight, double captureWeight, double preventWeight, double opponentWeight) {
+            return scoreDeltaWeight * this.getScoreDelta()
+                    + scoreWeight * this.placement.building().score()
+                    + captureWeight * this.positions
+                    + preventWeight * preventValue()
+                    + opponentWeight * opponentScore;
+        }
+
+
+        public String toWeightedString(WeightContainer weights) {
+            return toWeightedString(weights.scoreDeltaWeight, weights.scoreWeight, weights.captureWeight, weights.preventWeight, weights.opponentWeight);
+        }
+
+        public String toWeightedString(double scoreDeltaWeight, double scoreWeight, double captureWeight, double preventWeight, double opponentWeight) {
+            return "Placement: "
+                    + this.placement.toString()
+                    + "\nPlacement Score: "
+                    + (scoreWeight * this.placement.building().score())
+                    + "\nRegions: "
+                    + (getPositions() * captureWeight)
+                    + "\nPrevents: "
+                    + (preventWeight * getPrevent())
+                    + "\nScore Delta: "
+                    + (scoreDeltaWeight * getScoreDelta())
+                    + "\nOpponentGain: "
+                    + (opponentWeight * getOpponentScore())
+                    + "\n=> Score: "
+                    + getScore(new WeightContainer(scoreDeltaWeight, scoreWeight, captureWeight, preventWeight, opponentWeight));
+        }
+
+        @Override
+        public String toString() {
+            return "Placement: "
+                    + this.placement.toString()
+                    + "\nRegions: "
+                    + getPositions()
+                    + "\nPrevents: "
+                    + getPrevent()
+                    + "\nScore Delta"
+                    + getScoreDelta()
+                    + "\nOpponentGain: "
+                    + getOpponentScore()
+                    + "\n=> Score: "
+                    + getScore(new WeightContainer(1.0f, 1.0f, 1.0f, 1.0f, 1.0f));
         }
 
         public int getPositions() {
@@ -521,7 +678,7 @@ public class NewAi implements CathedralAI {
 
         @Override
         public void run() {
-            data = NewAi.getPlacements(game, from, to);
+            data = NewAi.getPlacements(game, from, to, true);
         }
 
         public Set<PlacementData> getData() {
@@ -545,15 +702,39 @@ public class NewAi implements CathedralAI {
         @Override
         public void run() {
             // Generate all the placement data that is possible for the opponent
-            Set<PlacementData> opponentPlacements = NewAi.getPlacements(game, 0, 10);
+            Set<PlacementData> opponentPlacements = NewAi.getPlacements(game, 0, 10, true);
             this.data.addAll(opponentPlacements);
             // Sort this list according to it's score, so that the main thread does not have to do this later
-            this.data.sort(Comparator.comparing(PlacementData::getScore));
+            this.data.sort(Comparator.comparing(placementData -> placementData.getScore(weights)));
         }
 
         public List<PlacementData> getData() {
             return this.data;
         }
     }
+}
+
+/**
+ * Aggregate class for saving the weights for the score function
+ */
+class WeightContainer {
+    // Instance variables
+    // ------------------
+    public double scoreDeltaWeight;
+    public double scoreWeight;
+    public double captureWeight;
+    public double preventWeight;
+    public double opponentWeight;
+
+    // Constructors
+    // ------------
+    public WeightContainer(double scoreDeltaWeight, double scoreWeight, double captureWeight, double preventWeight, double opponentWeight) {
+        this.captureWeight = captureWeight;
+        this.opponentWeight = opponentWeight;
+        this.preventWeight = preventWeight;
+        this.scoreWeight = scoreWeight;
+        this.scoreDeltaWeight = scoreDeltaWeight;
+    }
+
 }
 
