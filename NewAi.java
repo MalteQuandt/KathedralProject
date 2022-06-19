@@ -29,6 +29,8 @@ public class NewAi implements CathedralAI {
     private Integer iterateOver;
     // Initial list of weight combinations
     private List<WeightContainer> initials;
+    // Score which decides if the ai must play aggressive of defensive
+    private Double evaluate;
 
     @Override
     public String name() {
@@ -46,18 +48,21 @@ public class NewAi implements CathedralAI {
     }
 
     @Override
-    public void stopAI() {}
+    public void stopAI() {
+    }
 
     @Override
     public Placement takeTurn(Game game) {
+        // 0. Fetch the start time of the function
+        long start = System.nanoTime();
+        Game copy = game.copy();
+        evaluate(copy);
+
         mutate(iterateOver * processors);
         System.out.println(weights + "\n");
         for (WeightContainer container : initials) {
             System.out.println(container.toString());
         }
-        // Fetch the start time of the function
-        long start = System.nanoTime();
-        Game copy = game.copy();
         PlacementData bestPlacement;
         System.out.println(ANSI_GREEN + "[LOG] Capture percepts" + ANSI_RESET);
         // Get the percept:
@@ -105,11 +110,9 @@ public class NewAi implements CathedralAI {
         // Print confirmation for the finished calculations
         System.out.println(ANSI_GREEN + "[LOG] Done" + ANSI_RESET);
 
-        System.out.println(bestPlacement.toWeightedString(weights));
-
-        System.out.println(iterateOver);
-        // Return the calculated action
-        System.out.println(weights);
+//        System.out.println(bestPlacement.toWeightedString(weights));
+//        System.out.println(iterateOver);
+//        System.out.println(weights);
         return bestPlacement.placement;
     }
 
@@ -187,6 +190,7 @@ public class NewAi implements CathedralAI {
 
     /**
      * From a given range of weight container to placement data, calculate the average weight for the top n placements
+     *
      * @param weightContainerPlacementDataMap
      * @param n
      * @return
@@ -195,7 +199,7 @@ public class NewAi implements CathedralAI {
         WeightContainer container = new WeightContainer();
         int numberElements = weightContainerPlacementDataMap.size();
         // Adds the number of elements on top of each other
-        for(Map.Entry<WeightContainer, PlacementData> c : weightContainerPlacementDataMap.entrySet()) {
+        for (Map.Entry<WeightContainer, PlacementData> c : weightContainerPlacementDataMap.entrySet()) {
             container.opponentWeight += c.getKey().opponentWeight;
             container.scoreWeight += c.getKey().scoreWeight;
             container.captureWeight += c.getKey().captureWeight;
@@ -205,7 +209,7 @@ public class NewAi implements CathedralAI {
         // Divide by the number of elements
         container.opponentWeight /= numberElements;
         container.scoreWeight /= numberElements;
-        container.captureWeight/= numberElements;
+        container.captureWeight /= numberElements;
         container.scoreDeltaWeight /= numberElements;
         container.preventWeight /= numberElements;
 
@@ -308,8 +312,40 @@ public class NewAi implements CathedralAI {
         return weightContainerPlacementDataHashMap;
     }
 
-    public void evaluate(WeightContainer weights, Game game, Game previous) {
 
+
+    public void evaluate(Game game) {
+        if (evaluate == null) {
+            evaluate = 0.0; // We start out by playing defensive
+        }
+        // A positive score difference, meaning if the current player has higher score,
+        // the difference is positive
+        int scoreDifference = getScoreDifference(game, game.getCurrentPlayer());
+        if (0.0 < scoreDifference) {
+            // There is a positive difference, thus the enemy is 'loosing' => Play more aggressive
+            evaluate += 0.2 + 0.5 * scoreDifference;
+        } else {
+            // There is a negative difference, thus the enemy is 'winning' => Play more defensive
+            evaluate -= 0.2 + 0.1 * scoreDifference;
+        }
+
+        // Make sure the score stays in range
+        if(evaluate > 1.0) {
+            evaluate = 1.0;
+        } else if(evaluate < 0.0) {
+            evaluate = 0.0;
+        }
+
+        // Set the strategie to use
+        if (evaluate < 0.5) {
+            // Defensive
+            defensiv();
+            System.out.println("[LOG] Selection: DEFENSIVE" + ANSI_RESET);
+        } else {
+            // Aggressive
+            aggressive();
+            System.out.println(ANSI_CYAN + "[LOG] Selection: AGGRESSIVE" + ANSI_RESET);
+        }
     }
 
     /**
@@ -631,6 +667,21 @@ public class NewAi implements CathedralAI {
             System.out.print("|");
             System.out.println();
         }
+    }
+
+    /**
+     * Get the score difference for a specific player
+     *
+     * @param game   the game to operate on
+     * @param player the player to get the difference for
+     * @return
+     */
+    private int getScoreDifference(Game game, Color player) {
+        int whiteScore = getScore(game, Color.White);
+        int blackScore = getScore(game, Color.Black);
+        // Calculate the difference, which would be postivive for white if white has more than black
+        int scoreDifference = whiteScore - blackScore;
+        return player.equals(Color.White) ? scoreDifference : -scoreDifference;
     }
 
     /**
