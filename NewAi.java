@@ -317,10 +317,10 @@ public class NewAi implements CathedralAI {
         int scoreDifference = getScoreDifference(game, game.getCurrentPlayer());
         if (0.0 < scoreDifference) {
             // There is a positive difference, thus the enemy is 'loosing' => Play more aggressive
-            evaluate += 0.2;
+            evaluate += 0.2 + Math.abs(0.03 * scoreDifference);
         } else {
             // There is a negative difference, thus the enemy is 'winning' => Play more defensive
-            evaluate -= 0.2;
+            evaluate -= 0.2 + Math.abs(0.03 * scoreDifference);
         }
 
         // Make sure the score stays in range
