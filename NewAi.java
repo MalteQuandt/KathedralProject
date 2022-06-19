@@ -179,12 +179,6 @@ public class NewAi implements CathedralAI {
         PlacementData bestPlacement = calculateOptimalPlacement(opponentPlacementsToScoreDelta);
 
         // Get the weight for the best placement
-        this.weights = weightContainerPlacementDataMap
-                .entrySet()
-                .stream()
-                .filter(entry -> Objects.equals(entry.getValue(), bestPlacement))
-                .map(Map.Entry::getKey)
-                .collect(Collectors.toList()).get(0);
         return bestPlacement;
     }
 
@@ -323,10 +317,10 @@ public class NewAi implements CathedralAI {
         int scoreDifference = getScoreDifference(game, game.getCurrentPlayer());
         if (0.0 < scoreDifference) {
             // There is a positive difference, thus the enemy is 'loosing' => Play more aggressive
-            evaluate += 0.2 + 0.5 * scoreDifference;
+            evaluate += 0.2;
         } else {
             // There is a negative difference, thus the enemy is 'winning' => Play more defensive
-            evaluate -= 0.2 + 0.1 * scoreDifference;
+            evaluate -= 0.2;
         }
 
         // Make sure the score stays in range
@@ -683,7 +677,33 @@ public class NewAi implements CathedralAI {
         int scoreDifference = whiteScore - blackScore;
         return player.equals(Color.White) ? scoreDifference : -scoreDifference;
     }
-
+    /**
+     * Get the amount of regions captured by the current player at any given point in time
+     *
+     * @param field  the board to check on
+     * @param player the player's regions to check for
+     * @return the amount of regions the current player currently has
+     */
+    private static int checkRegionsSize(Color[][] field, Color player) {
+        int regions = 0;
+        for (int i = 0; i < 10; i++) {
+            for (int j = 0; j < 10; j++) {
+                // If the field is a capture of the current player, and if the field is not yet captured
+                if (field[i][j].getId() == (player.getId() + 1)) regions++;
+            }
+        }
+        return regions;
+    }
+    /**
+     * Get the intersection of two sets of positions
+     *
+     * @param a the first position set
+     * @param b the second position set
+     * @return the set intersection
+     */
+    private Set<Position> getSetIntersection(Collection<Position> a, Collection<Position> b) {
+        return a.stream().filter(position -> b.contains(position)).collect(Collectors.toSet());
+    }
     /**
      * Data class that contains all the data for a placement that are relevant for it's evaluation
      */
@@ -864,19 +884,32 @@ public class NewAi implements CathedralAI {
         // The game that this thread operates on
         private final Game game;
         // Data this thread generates
-        private List<PlacementData> data;
+        private final List<PlacementData> data;
+
+        // Store the hull placements for each player, and calulate them each anew at the start of the ki
+        private final Map<Color, Set<Position>> hullPlayerPositions;
+        // Store the turn placements for each player and calculate them each anew at the start of the ki
+        private final Map<Color, Set<Position>> turnPlayerPositions;
+        // Store the positions that the turn player can place their placements to
+        private final Map<Color, Set<Position>> turnPlayerPlacablePositions;
 
         public OpponentWorker(Game game) {
             this.game = game.copy();
             data = new ArrayList<PlacementData>();
-            // Jump to the next player
-            // this.game.forfeitTurn();
+
+            turnPlayerPlacablePositions = new HashMap<>();
+            hullPlayerPositions = new HashMap<>();
+            turnPlayerPositions = new HashMap<>();
+
+            updateTurn(game);
+            updateHull(game);
+            updateTurnPlayerPlacables(game);
         }
 
         @Override
         public void run() {
             // Generate all the placement data that is possible for the opponent
-            Set<PlacementData> opponentPlacements = NewAi.getPlacements(game, 0, 10, true);
+            Set<PlacementData> opponentPlacements = calculateCapturingPlacements(game, game.getCurrentPlayer());
             this.data.addAll(opponentPlacements);
             // Sort this list according to it's score, so that the main thread does not have to do this later
             this.data.sort(Comparator.comparing(placementData -> placementData.getScore(weights)));
@@ -885,7 +918,197 @@ public class NewAi implements CathedralAI {
         public List<PlacementData> getData() {
             return this.data;
         }
+
+        // Placement finding methods
+        // -------------------------
+
+        /**
+         * calculate all the placements that would capture a specific region for a given player
+         *
+         * @param game   the game to work on
+         * @param player the player to calculate for
+         * @return the placements that are calculated
+         */
+        private Set<PlacementData> calculateCapturingPlacements(Game game, Color player) {
+            // 0. Initialization
+            // Get the current score and regions for current player
+            int currentScore = getScore(game, player);
+            int oldRegions = checkRegionsSize(game.getBoard().getField(), player);
+            // Iterate over all possible placements
+            Set<PlacementData> placementDataList = new HashSet<>();
+            for (Building building : game.getPlacableBuildings(player)) {
+                for (Direction direction : building.getTurnable().getPossibleDirections()) {
+                    for (int x = 0; x < 10; x++) {
+                        for (int y = 0; y < 10; y++) {
+                            Placement placement = new Placement(new Position(x, y), direction, building);
+                            // Positions of the placement shifted by the position
+                            Set<Position> placementPositions = placement
+                                    .form()
+                                    .stream()
+                                    .map(p -> p.plus(placement.position()))
+                                    .collect(Collectors.toSet());
+                            // Find all positions that are in the placement and the hull of the current player
+                            Set<Position> intersection = getSetIntersection(this.hullPlayerPositions.get(player), placementPositions);
+                            // There are intersection positions, thus we can check this placement
+                            if (intersection.size() != 0 && game.takeTurn(placement, false)) {
+                                game.undoLastTurn();
+                                game.takeTurn(placement, false);
+
+                                int newScore = getScore(game, player);
+                                int newRegions = checkRegionsSize(game.getBoard().getField(), player);
+
+                                PlacementData newPlacement = new PlacementData(placement,  newScore - currentScore);
+                                newPlacement.deltaScore = newScore - currentScore;
+                                placementDataList.add(newPlacement);
+                                game.undoLastTurn();
+                            }
+                        }
+                    }
+                }
+            }
+            return placementDataList;
+        }
+
+        /**
+         * For both players, update the hull position set
+         *
+         * @param copy the game on which to operate
+         * @before Make sure that the updateTurn method is called before this method!
+         */
+        private void updateHull(Game copy) {
+            // Black:
+            this.hullPlayerPositions.put(Color.Black, getPlayerHull(copy, Color.Black));
+            // White
+            this.hullPlayerPositions.put(Color.White, getPlayerHull(copy, Color.White));
+            // Blue
+            this.hullPlayerPositions.put(Color.Blue, getPlayerHull(copy, Color.Blue));
+        }
+
+        /**
+         * For both players, update the turn position set
+         *
+         * @param copy the game on which to operate
+         */
+        private void updateTurn(Game copy) {
+            // Black
+            this.turnPlayerPositions.put(Color.Black, getPlayerTurn(copy, Color.Black));
+            this.turnPlayerPositions.put(Color.Black_Owned, getPlayerTurn(copy, Color.Black_Owned));
+            // White
+            this.turnPlayerPositions.put(Color.White, getPlayerTurn(copy, Color.White));
+            this.turnPlayerPositions.put(Color.White_Owned, getPlayerTurn(copy, Color.White_Owned));
+            // Blue
+            this.turnPlayerPositions.put(Color.Blue, getPlayerTurn(copy, Color.Blue));
+        }
+
+        private void updateTurnPlayerPlacables(Game copy) {
+            Color player = copy.getCurrentPlayer();
+            Set<Position> playerPlacablePositions = new HashSet<>();
+            for (int i = 0; i < 10; i++) {
+                for (int j = 0; j < 10; j++) {
+                    Color clr = copy.getBoard().getField()[i][j];
+                    if (clr.equals(player.subColor()) || clr.equals(Color.None)) {
+                        playerPlacablePositions.add(new Position(i, j));
+                    }
+                }
+            }
+            this.turnPlayerPlacablePositions.put(copy.getCurrentPlayer(), playerPlacablePositions);
+        }
+        /**
+         * Get the placements for a given player
+         *
+         * @param game   the game to get the placements from
+         * @param player the player to get the plcements for
+         * @return the placements of a given player
+         */
+        public Set<Placement> getPlayerPlacements(Game game, Color player) {
+            return game.getBoard().getPlacedBuildings().stream().filter(placement -> placement.building().getColor().equals(player)).collect(Collectors.toSet());
+        }
+
+        // Position methods
+        // ----------------
+
+        /**
+         * Calculate all positions in a game that belong to a given player
+         *
+         * @param game   the game to get the positions from
+         * @param player the player to get the positions for
+         * @return the position set for a given player
+         */
+        public Set<Position> getPlayerTurn(Game game, Color player) {
+            // Get all placements for a given player
+            Set<Placement> placements = getPlayerPlacements(game, player);
+            // Get all the positions for a given player
+            Set<Position> positions = new HashSet<>();
+            for (Placement placement : placements) {
+                // Only take this placement into account if it belongs to the player 'player'
+                Set<Position> placementTurn = calculateTurn(placement, placement.position());
+                positions.addAll(placementTurn);
+            }
+            return positions;
+        }
+
+        private Set<Position> calculateTurn(Placement placementData, Position p) {
+            return calculateTurn(placementData)
+                    .stream()
+                    .map(position -> position.plus(p))
+                    .collect(Collectors.toSet());
+        }
+
+        private Set<Position> calculateTurn(Placement placementData) {
+            return new HashSet<>(placementData.building().turn(placementData.direction()));
+        }
+        // Hull Methods
+        // ------------
+
+        /**
+         * Calculate the hull around a placement shifted by a placement position
+         *
+         * @param placementData the data to calculate the hull around
+         * @param p             the position to shift by
+         * @return the shifted hull around a set of placements
+         */
+        private Set<Position> calculateHull(Placement placementData, Position p) {
+            return calculateHull(placementData)
+                    .stream()
+                    .map(position -> position.plus(p))
+                    .collect(Collectors.toSet());
+        }
+
+        /**
+         * Calculate the hull of a set of positions
+         *
+         * @return the hull around the positions
+         */
+        private Set<Position> calculateHull(Placement placementData) {
+            return new HashSet<>(placementData.building().corners(placementData.direction()));
+        }
+
+        /**
+         * For a given player p, get the positions that represent the hull of each placement on the field
+         *
+         * @param game   the game to take the placements from
+         * @param player the player to take the
+         * @return the set of all positions
+         * @brief Calculate all hulls positions for given player
+         * @author malte quandt
+         * @version 1.0
+         */
+        public Set<Position> getPlayerHull(Game game, Color player) {
+            // Get all placements for a given player
+            Set<Placement> placements = getPlayerPlacements(game, player);
+            // Get all the positions for a given player
+            Set<Position> positions = new HashSet<>();
+            for (Placement placement : placements) {
+                // Only take this placement into account if it belongs to the player 'player'
+                Set<Position> placementHull = calculateHull(placement, placement.position());
+                positions.addAll(placementHull);
+            }
+            positions.removeAll(this.turnPlayerPositions.get(player));
+            return positions;
+        }
     }
+
+
 }
 
 /**
