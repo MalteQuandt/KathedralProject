@@ -27,8 +27,6 @@ public class NewAi implements CathedralAI {
     private WeightContainer weights;
     // How many times the thread iteration should take place
     private Integer iterateOver;
-    // Initial list of weight combinations
-    private List<WeightContainer> initials;
     // Score which decides if the ai must play aggressive of defensive
     private Double evaluate;
 
@@ -58,11 +56,6 @@ public class NewAi implements CathedralAI {
         Game copy = game.copy();
         evaluate(copy);
 
-        mutate(iterateOver * processors);
-        System.out.println(weights + "\n");
-        for (WeightContainer container : initials) {
-            System.out.println(container.toString());
-        }
         PlacementData bestPlacement;
         System.out.println(ANSI_GREEN + "[LOG] Capture percepts" + ANSI_RESET);
         // Get the percept:
@@ -114,20 +107,6 @@ public class NewAi implements CathedralAI {
 //        System.out.println(iterateOver);
 //        System.out.println(weights);
         return bestPlacement.placement;
-    }
-
-    /**
-     * Generate an initial range of solutions and mutates them
-     *
-     * @param initialSize the initial range of solutions
-     */
-    public void mutate(int initialSize) {
-        initials = new ArrayList<>(initialSize);
-        for (int i = 0; i < initialSize; i++) {
-            initials.add(i, new WeightContainer());
-        }
-        // Mutates the values in the initials
-        initials.forEach(weightContainer -> weightContainer.mutateAdditively(weights, -0.02, 0.02));
     }
 
     public void defensiv() {
@@ -268,16 +247,14 @@ public class NewAi implements CathedralAI {
                 }
                 final Integer finalI = i;
                 final Integer finalJ = j;
-                // Sort the placement list according to a given score function weighted by a weight
-                WeightContainer container = initials.get(iterateOver * finalI + finalJ);
                 // Calculate the best placements for any given weight in the initials list
                 PlacementData placement = highestScorePlacement
                         .stream()
-                        .sorted(Comparator.comparing(placementData -> placementData.getScore(container)))
+                        .sorted(Comparator.comparing(placementData -> placementData.getScore(this.weights)))
                         .collect(Collectors.toList())
                         .get(highestScorePlacement.size() - (iterateOver * j + j) - 1);
                 // Put the {Weight, Placement} map into the container
-                weightContainerPlacementDataHashMap.put(container, placement);
+                weightContainerPlacementDataHashMap.put(this.weights, placement);
                 // Apply the placement
                 copy.takeTurn(placement.getPlacement());
                 // Calculate the next turn of the opponent
@@ -305,8 +282,6 @@ public class NewAi implements CathedralAI {
         }
         return weightContainerPlacementDataHashMap;
     }
-
-
 
     public void evaluate(Game game) {
         if (evaluate == null) {
@@ -341,49 +316,6 @@ public class NewAi implements CathedralAI {
             System.out.println(ANSI_CYAN + "[LOG] Selection: AGGRESSIVE" + ANSI_RESET);
         }
     }
-
-    /**
-     * For each of the best placements that were previously calculated, calculate the reaction that the opponent might make
-     * on a separate thread.
-     *
-     * @param copy
-     * @param iterateOver
-     * @param loop
-     * @param opponentWorkers
-     * @param opponentData
-     * @param highestScorePlacement
-     */
-    public void calculateOpponentsReactions(Game copy, final Integer iterateOver, final Integer loop,
-                                            List<OpponentWorker> opponentWorkers,
-                                            Map<PlacementData, List<PlacementData>> opponentData,
-                                            List<PlacementData> highestScorePlacement
-    ) {
-        for (int i = 0; i < iterateOver; i++) {
-            for (int j = 0; j < loop; j++) {
-                // If the bounds are unrealistic, break out from this inner loop
-                if ((highestScorePlacement.size() - (iterateOver * j + j) - 1) < 0) {
-                    break;
-                }
-                setupOpponentWorkerThread(copy, i, j, iterateOver, opponentWorkers, opponentData, highestScorePlacement);
-
-            }
-            // Fill the work calculators
-            for (OpponentWorker worker : opponentWorkers) {
-                worker.start();
-            }
-            // Wait for those threads to finish execution
-            for (OpponentWorker worker : opponentWorkers) {
-                try {
-                    worker.join();
-                } catch (InterruptedException e) {
-                    e.printStackTrace();
-                }
-            }
-            // Last iteration, thus we clear the opponent workers
-            opponentWorkers.clear();
-        }
-    }
-
     /**
      * Set up the worker threads for a given placement and calculate the opponents reactions with it
      *

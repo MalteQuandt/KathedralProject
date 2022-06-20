@@ -55,6 +55,7 @@ public class EchoAI implements CathedralAI {
         updateHull(copy);
         updateTurnPlayerPlacables(copy);
         long startTime = System.currentTimeMillis();
+        printPlayerPositionList(this.turnPlayerPlacablePositions.get(game.getCurrentPlayer()).stream().toList(), game.getCurrentPlayer());
 
         // 1. Calculate the possible positions for the current player
         Set<PlacementData> possibles = getPlacements(copy, 0, 10, false);
@@ -64,7 +65,7 @@ public class EchoAI implements CathedralAI {
             capturingPlacements = calculateCapturingPlacements(copy, copy.getCurrentPlayer());
             System.out.println(capturingPlacements.size());
         }
-
+        if(possibles.size() == 0) {return null;}
 
         PlacementData pd = null;
         if (capturingPlacements.isEmpty() || game.getCurrentPlayer().equals(Color.Blue)) {
@@ -72,9 +73,7 @@ public class EchoAI implements CathedralAI {
         } else {
             pd = capturingPlacements.stream().collect(Collectors.toList()).get(ThreadLocalRandom.current().nextInt(0, capturingPlacements.size()));
         }
-        if(capturingPlacements.size() != 0) {
-            combine(capturingPlacements, possibles);
-        }
+
         long endTime = System.currentTimeMillis();
         printTime(startTime, endTime);
         // And return the calculated best placement to be done
@@ -88,6 +87,8 @@ public class EchoAI implements CathedralAI {
         System.out.println(ANSI_GREEN + "[LOG] Stop the AI" + ANSI_RESET);
     }
 
+    // Non-AI Specific Methods
+    // -----------------------
 
     /**
      * Calculate the placement that would capture the most
@@ -125,20 +126,6 @@ public class EchoAI implements CathedralAI {
         return 0x0e0;
     }
 
-    public Set<PlacementData> combine(Set<PlacementData> a, Set<PlacementData> b) {
-        Set<PlacementData> output = new HashSet<>();
-        for (PlacementData adata : a) {
-            for (PlacementData bdata : b) {
-                if (adata.getPlacement().equals(bdata)) {
-                    output.add(new PlacementData(adata.getPlacement(),
-                            adata.getCapture() != 0 ? adata.getCapture() : bdata.getCapture(),
-                            adata.getPlayerScoreDelta() != 0 ? adata.getPlayerScoreDelta() : bdata.getPlayerScoreDelta()));
-                }
-            }
-        }
-        return output;
-    }
-
     // Helper methods
     // --------------
 
@@ -174,9 +161,10 @@ public class EchoAI implements CathedralAI {
                                 .collect(Collectors.toSet());
                         // Find all positions that are in the placement and the hull of the current player
                         Set<Position> intersection = getSetIntersection(this.hullPlayerPositions.get(player), placementPositions);
+                        Set<Position> placableIntersection = getSetIntersection(this.turnPlayerPlacablePositions.get(player), placementPositions);
                         // There are intersection positions, thus we can check this placement
-                        if (intersection.size() != 0 && game.takeTurn(placement, false)) {
-                            game.undoLastTurn();
+                        if (!intersection.isEmpty() &&  placableIntersection.size() == placementPositions.size()) {
+                            printPlayerPositionList(placableIntersection.stream().toList(), player);
                             game.takeTurn(placement, false);
 
                             int newScore = getScoreDifference(game, player);
@@ -216,20 +204,18 @@ public class EchoAI implements CathedralAI {
                 Placement possPlacement = new Placement(x, y, direction, building);
                 int deltaScore;
                 int deltaRegions;
-                // Check, if the placement can be placed
+                    // Check, if the placement can be placed
                 // Positions of the placement shifted by the position
                 Set<Position> placementPositions = possPlacement
                         .form()
                         .stream()
                         .map(p -> p.plus(possPlacement.position()))
                         .collect(Collectors.toSet());
-                int intersections = getSetIntersection(placementPositions, this.turnPlayerPlacablePositions.get(player)).size();
                 // Take a turn using the "fast" method, meaning without checking the regions
-                if (intersections == placementPositions.size() && game.takeTurn(possPlacement, true)) {
+                if (this.turnPlayerPlacablePositions.get(player).containsAll(placementPositions)) {
                     // If the placements should be checked, we do that now
                     if (checkPlacements) {
                         // Undo the just-took turn to be able to take a closer look at the regions
-                        game.undoLastTurn();
                         // Fetch the regions that are placed at this point
                         game.takeTurn(possPlacement, false);
                         // Fetch the new score of the starting player
@@ -238,6 +224,7 @@ public class EchoAI implements CathedralAI {
                         // Calculate the difference between the values regions & score
                         deltaScore = oldScore - newScore;
                         deltaRegions = placementsEnd - placementsStart;
+                        game.undoLastTurn();
                     } else {
                         // We don't calculate the placements
                         int newScore = getScore(game, player);
@@ -246,7 +233,6 @@ public class EchoAI implements CathedralAI {
                     }
                     // Add that placement to the list of possible placements
                     data.add(new PlacementData(possPlacement, deltaRegions, deltaScore));
-                    game.undoLastTurn();
                 }
 
             }
